@@ -14,6 +14,9 @@ use std::str;
 
 struct Client;
 
+const TIMEOUT_TINY: u64 = 5;
+const TIMEOUT_MAIN: u64 = 60;
+
 #[async_trait]
 impl client::Handler for Client {
     type Error = Error;
@@ -31,7 +34,7 @@ async fn connect(ip: IpAddr, port: u16) -> Result<russh::client::Handle<Client>>
     let config = russh::client::Config::default();
     let sh = Client {};
     let mut session = tokio::time::timeout(
-        Duration::from_secs(10),
+        Duration::from_secs(TIMEOUT_TINY),
         russh::client::connect(Arc::new(config), (ip, port), sh)
     ).await??;
     session.authenticate_password("root", "12345").await?;
@@ -40,7 +43,7 @@ async fn connect(ip: IpAddr, port: u16) -> Result<russh::client::Handle<Client>>
 
 // Helper function to wait for SCP acknowledgment
 async fn wait_for_acknowledgment(channel: &mut russh::Channel<Msg>) -> Result<()> {
-    let timeout_duration = Duration::from_secs(30);
+    let timeout_duration = Duration::from_secs(TIMEOUT_MAIN);
 
     match tokio::time::timeout(timeout_duration, channel.wait()).await {
         Ok(Some(russh::ChannelMsg::Data { ref data })) => {
@@ -109,7 +112,7 @@ async fn transfer_file<F>(src: &str, dst: &str, session: &mut Handle<Client>, mu
         let chunk_end = std::cmp::min(chunk_start + CHUNK_SIZE, file_contents.len());
         let chunk = &file_contents[chunk_start..chunk_end];
 
-        tokio::time::timeout(Duration::from_secs(30), channel.data(chunk)).await??;
+        tokio::time::timeout(Duration::from_secs(TIMEOUT_MAIN), channel.data(chunk)).await??;
         total_sent += chunk.len();
 
         let percent = (total_sent as f64 / total_size as f64 * 100.0).min(100.0);
@@ -132,12 +135,12 @@ async fn transfer_file<F>(src: &str, dst: &str, session: &mut Handle<Client>, mu
     wait_for_acknowledgment(&mut channel).await?;
 
     // Finish up
-    tokio::time::timeout(Duration::from_secs(5), channel.eof()).await??;
+    tokio::time::timeout(Duration::from_secs(TIMEOUT_TINY), channel.eof()).await??;
 
     info!("consuming leftovers if any...");
     // consume leftovers
     loop {
-       match tokio::time::timeout(Duration::from_secs(30), channel.wait()).await {
+       match tokio::time::timeout(Duration::from_secs(TIMEOUT_TINY), channel.wait()).await {
             Ok(msg) => {
                 if msg.is_none() {
                     break;
@@ -146,7 +149,7 @@ async fn transfer_file<F>(src: &str, dst: &str, session: &mut Handle<Client>, mu
             Err(_) => (),
         }
     }
-    tokio::time::timeout(Duration::from_secs(5), channel.close()).await??;
+    tokio::time::timeout(Duration::from_secs(TIMEOUT_TINY), channel.close()).await??;
 
     status_update("File sent successfully!");
     Ok(())
@@ -162,7 +165,7 @@ async fn run_command<F>(session: &mut Handle<Client>, command: &str, mut status_
     let mut channel = session.channel_open_session().await?;
     channel.exec(true, command).await?;
 
-    while let Some(msg) = tokio::time::timeout(Duration::from_secs(30), channel.wait()).await? {
+    while let Some(msg) = tokio::time::timeout(Duration::from_secs(TIMEOUT_MAIN), channel.wait()).await? {
         match msg {
             russh::ChannelMsg::Data { ref data } => {
                 buf.write_all(data)?;
@@ -192,7 +195,7 @@ async fn run_command<F>(session: &mut Handle<Client>, command: &str, mut status_
                         if !trimmed.is_empty() {
                             status_update(trimmed);
                             if line.contains("Unconditional reboot") {
-                                let _ = tokio::time::timeout(Duration::from_secs(5), channel.close()).await;
+                                let _ = tokio::time::timeout(Duration::from_secs(TIMEOUT_TINY), channel.close()).await;
                                 return Ok(res);
                             }
                         }
@@ -237,12 +240,12 @@ async fn run_command<F>(session: &mut Handle<Client>, command: &str, mut status_
     }
 
     // Finish up
-    tokio::time::timeout(Duration::from_secs(5), channel.eof()).await??;
+    tokio::time::timeout(Duration::from_secs(TIMEOUT_TINY), channel.eof()).await??;
 
     info!("consuming leftovers if any...");
     // consume leftovers
     loop {
-       match tokio::time::timeout(Duration::from_secs(30), channel.wait()).await {
+       match tokio::time::timeout(Duration::from_secs(TIMEOUT_TINY), channel.wait()).await {
             Ok(msg) => {
                 if msg.is_none() {
                     break;
@@ -253,7 +256,7 @@ async fn run_command<F>(session: &mut Handle<Client>, command: &str, mut status_
     }
 
     info!("closing channel");
-    tokio::time::timeout(Duration::from_secs(5), channel.close()).await??;
+    tokio::time::timeout(Duration::from_secs(TIMEOUT_TINY), channel.close()).await??;
 
     status_update(format!("command '{}' done.", command).as_str());
 
