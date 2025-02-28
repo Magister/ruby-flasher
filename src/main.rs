@@ -2,8 +2,12 @@
 
 use std::sync::{Arc, Mutex};
 
-use fltk::{app::{self}, button::Button, enums::{self, Color, Font}, frame::Frame, group::Flex, input::{Input, InputType}, prelude::*, text::{StyleTableEntry, TextBuffer, TextDisplay}, window::Window};
+use fltk::{app::{self}, button::Button, enums::{self, Color, Font}, frame::Frame, group::Flex, image::IcoImage, input::{Input, InputType}, prelude::*, text::{StyleTableEntry, TextBuffer, TextDisplay}, window::Window};
 use log::{error, info, LevelFilter};
+use rust_embed::RustEmbed;
+#[derive(RustEmbed)]
+#[folder = "assets/"]
+struct Asset;
 
 mod flasher;
 
@@ -181,6 +185,10 @@ impl RubyFlasher {
         let (w, h) = (600, 400);
         let mut wind = Window::new(x - w/2, y - h/2, w, h, "RubyFPV simple flasher");
         wind.make_resizable(true);
+        let bytes = Asset::get("ruby.ico").unwrap();
+        let image = IcoImage::from_data(&bytes.data).unwrap();
+        wind.set_icon(Some(image));
+
         let mut container = Flex::default().size_of_parent().column();
         container.set_margin(12);
     
