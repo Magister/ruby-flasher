@@ -1,4 +1,5 @@
 use anyhow::{Error, Result};
+use async_trait::async_trait;
 use client::{Handle, Msg};
 use keys::ssh_key;
 use log::{error, info};
@@ -13,6 +14,7 @@ use std::str;
 
 struct Client;
 
+#[async_trait]
 impl client::Handler for Client {
     type Error = Error;
 
@@ -190,7 +192,8 @@ async fn run_command<F>(session: &mut Handle<Client>, command: &str, mut status_
                         if !trimmed.is_empty() {
                             status_update(trimmed);
                             if line.contains("Unconditional reboot") {
-                                break;
+                                let _ = tokio::time::timeout(Duration::from_secs(5), channel.close()).await;
+                                return Ok(res);
                             }
                         }
                     }
