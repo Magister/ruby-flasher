@@ -1,17 +1,11 @@
+// #![windows_subsystem = "windows"]
+
+use std::sync::{Arc, Mutex};
+
 use fltk::{app::{self}, button::Button, enums::{self, Color, Font}, frame::Frame, group::Flex, input::{Input, InputType}, prelude::*, text::{StyleTableEntry, TextBuffer, TextDisplay}, window::Window};
-use log::{error, LevelFilter};
+use log::{error, info, LevelFilter};
 
 mod flasher;
-
-fn replace_last_line(buf: &mut TextBuffer, new_text: &str) {
-    let text = buf.text();
-    if let Some(pos) = text.rfind('\n') {
-        buf.replace((pos + 1) as i32, buf.length(), new_text);
-    } else {
-        // If no newline, replace the whole text
-        buf.set_text(new_text);
-    }
-}
 
 #[derive(Clone)]
 struct DisplayState {
@@ -30,13 +24,13 @@ impl DisplayState {
         
         // Define style table (maps single-character style tags to colors)
         let styles = vec![
-            StyleTableEntry { color: Color::Black, font: Font::Helvetica, size: 12 },  // 'A' = Black
-            StyleTableEntry { color: Color::Red, font: Font::Helvetica, size: 12 },    // 'B' = Red
-            StyleTableEntry { color: Color::Green, font: Font::Helvetica, size: 12 },  // 'C' = Green
-            StyleTableEntry { color: Color::Blue, font: Font::Helvetica, size: 12 },   // 'D' = Blue
-            StyleTableEntry { color: Color::Magenta, font: Font::Helvetica, size: 12 },// 'E' = Magenta
-            StyleTableEntry { color: Color::Cyan, font: Font::Helvetica, size: 12 },   // 'F' = Cyan
-            StyleTableEntry { color: Color::Dark3, font: Font::Helvetica, size: 12 },  // 'G' = Non-printable ASCII (Gray)
+            StyleTableEntry { color: Color::Black, font: Font::Courier, size: 12 },  // 'A' = Black
+            StyleTableEntry { color: Color::Red, font: Font::Courier, size: 12 },    // 'B' = Red
+            StyleTableEntry { color: Color::Green, font: Font::Courier, size: 12 },  // 'C' = Green
+            StyleTableEntry { color: Color::Blue, font: Font::Courier, size: 12 },   // 'D' = Blue
+            StyleTableEntry { color: Color::Magenta, font: Font::Courier, size: 12 },// 'E' = Magenta
+            StyleTableEntry { color: Color::Cyan, font: Font::Courier, size: 12 },   // 'F' = Cyan
+            StyleTableEntry { color: Color::Dark3, font: Font::Courier, size: 12 },  // 'G' = Non-printable ASCII (Gray)
         ];
 
         // Apply styles
@@ -57,6 +51,8 @@ impl DisplayState {
             if ch == '\x1b' && chars.peek() == Some(&'[') {
                 chars.next(); // Skip '['
                 let mut code = String::new();
+
+                // Collect ANSI escape sequence (e.g., "0;31m")
                 while let Some(&next) = chars.peek() {
                     if next.is_ascii_digit() || next == ';' || next == 'm' {
                         code.push(chars.next().unwrap());
@@ -67,15 +63,22 @@ impl DisplayState {
                         break;
                     }
                 }
-                match code.as_str() {
-                    "0m" => current_style = 'A',  // Reset to Black
-                    "31m" => current_style = 'B', // Red
-                    "32m" => current_style = 'C', // Green
-                    "34m" => current_style = 'D', // Blue
-                    "35m" => current_style = 'E', // Magenta
-                    "36m" => current_style = 'F', // Cyan
-                    _ => {}
+
+                // Parse ANSI codes
+                let mut new_style = 'A'; // Default reset
+                for part in code.trim_end_matches('m').split(';') {
+                    match part {
+                        "0" => new_style = 'A',  // Reset style
+                        "31" => new_style = 'B', // Red
+                        "32" => new_style = 'C', // Green
+                        "34" => new_style = 'D', // Blue
+                        "35" => new_style = 'E', // Magenta
+                        "36" => new_style = 'F', // Cyan
+                        _ => {} // Ignore unsupported codes
+                    }
                 }
+                current_style = new_style; // Apply last parsed style
+
             } else {
                 // ASCII Highlighting
                 let ascii_style = if ch.is_ascii_control() {
@@ -87,7 +90,9 @@ impl DisplayState {
                 };
 
                 plain_text.push(ch);
-                style_text.push(ascii_style);
+                for _ in 0..ch.len_utf8() {
+                    style_text.push(ascii_style);
+                }
             }
         }
 
@@ -107,13 +112,14 @@ impl DisplayState {
 }
 
 fn update_status(text_display: &mut DisplayState, status: &str) {
+    info!("{}", status);
     text_display.append_text(format!("{}\n", status).as_str());
 }
 
-fn choose_file() -> Option<String> {
+fn choose_file(soc: &str) -> Option<String> {
     let mut dialog = fltk::dialog::NativeFileChooser::new(fltk::dialog::NativeFileChooserType::BrowseFile);
     dialog.set_option(fltk::dialog::NativeFileChooserOptions::UseFilterExt);
-    dialog.set_filter("*ruby*.tgz");
+    dialog.set_filter(format!("{}_rubyfpv_*.tgz", soc).as_str());
     match dialog.try_show() {
         Err(e) => {
             error!("error: {:?}", e);
@@ -139,76 +145,193 @@ pub fn center() -> (i32, i32) {
     )
 }
 
+#[derive(Copy, Clone)]
+enum Message {
+    PortChanged,
+    IpChanged,
+    DetectSoc,
+    Flash,
+}
+
+#[derive(Default)]
+struct State {
+    soc: String,
+    ip: String,
+    port: String,
+}
+
+struct RubyFlasher {
+    app: app::App,
+    receiver: app::Receiver<Message>,
+    display: Arc<Mutex<DisplayState>>,
+    ip_input: Input,
+    port_input: Input,
+    btn_detect: Button,
+    btn_flash: Button,
+    state: Arc<Mutex<State>>,
+}
+
+impl RubyFlasher {
+    pub fn new() -> Self {
+
+        let app = app::App::default().with_scheme(app::Scheme::Gtk);
+        let (s, receiver) = app::channel();
+
+        let (x, y) = center();
+        let (w, h) = (600, 400);
+        let mut wind = Window::new(x - w/2, y - h/2, w, h, "RubyFPV simple flasher");
+        wind.make_resizable(true);
+        let mut container = Flex::default().size_of_parent().column();
+        container.set_margin(12);
+    
+        let mut flex = Flex::default().size_of_parent().row();
+        container.fixed(&flex, 29);
+        let frame = Frame::default()
+                .with_label("IP address:")
+                .with_align(enums::Align::Inside);
+        flex.fixed(&frame, 70);
+        let mut ip_input = Input::default();
+        ip_input.emit(s, Message::IpChanged);
+        let frame = Frame::default()
+                .with_label("port:")
+                .with_align(enums::Align::Inside);
+        flex.fixed(&frame, 30);
+        let mut port_input = Input::default().with_type(InputType::Int);
+        port_input.set_value("22");
+        port_input.emit(s, Message::PortChanged);
+
+        flex.fixed(&port_input, 70);
+    
+        let mut btn_detect = Button::default().with_label("Identify SOC");
+    
+        let mut btn_flash = Button::default().with_label("Flash firmware...");
+        btn_flash.deactivate();
+    
+        flex.end();
+        let flex2 = Flex::default().size_of_parent().row();
+        let display = Arc::new(Mutex::new(DisplayState::new()));
+        flex2.end();
+        container.end();
+        wind.end();
+        wind.show();
+    
+        btn_detect.emit(s, Message::DetectSoc);
+        btn_flash.emit(s, Message::Flash);
+    
+        let state = Arc::new(Mutex::new(State { port: "22".to_string(), ..Default::default() }));
+        Self {
+            app,
+            receiver,
+            ip_input,
+            port_input,
+            display,
+            state,
+            btn_detect,
+            btn_flash,
+        }
+    }
+
+    pub fn run(mut self) {
+        while self.app.wait() {
+            if let Some(msg) = self.receiver.recv() {
+                match msg {
+                    Message::IpChanged => {
+                        let mut state = self.state.lock().unwrap();
+                        state.ip = self.ip_input.value();
+                    },
+                    Message::PortChanged => {
+                        let mut state = self.state.lock().unwrap();
+                        state.port = self.port_input.value();
+                    },
+                    Message::DetectSoc => {
+                        let state = self.state.lock().unwrap();
+                        let mut display = self.display.lock().unwrap();
+                        let port: u16 = match state.port.parse() {
+                            Ok(v) => v,
+                            Err(e) => {
+                                error!("error: {:?}", e);
+                                update_status(&mut display, "Error: invalid port specified.");
+                                continue;
+                            }
+                        };
+                        self.btn_detect.deactivate();
+                        let state_clone = self.state.clone();
+                        let display_clone = self.display.clone();
+                        let mut btn_detect_clone = self.btn_detect.clone();
+                        let mut btn_flash_clone = self.btn_flash.clone();
+                        tokio::spawn(async move {
+                            let ip = state_clone.lock().unwrap().ip.clone();
+                            match flasher::detect_soc(ip.as_str(), port, |msg| {
+                                update_status(&mut display_clone.lock().unwrap(), msg);
+                            }).await {
+                                Ok(soc) => {
+                                    state_clone.lock().unwrap().soc = soc;
+                                    update_status(&mut display_clone.lock().unwrap(), "Done.");
+                                    btn_detect_clone.activate();
+                                    btn_flash_clone.activate();
+                                },
+                                Err(e) => {
+                                    error!("error: {:?}", e);
+                                    update_status(&mut display_clone.lock().unwrap(), format!("Error: {}", e).as_str());
+                                    btn_detect_clone.activate();
+                                    btn_flash_clone.deactivate();
+                                }
+                            }
+                        });
+                    },
+                    Message::Flash => {
+                        let state = self.state.lock().unwrap();
+                        let mut display = self.display.lock().unwrap();
+                        let path = match choose_file(state.soc.as_str()) {
+                            Some(path) => path,
+                            None => continue,
+                        };
+                        let port: u16 = match state.port.parse() {
+                            Ok(v) => v,
+                            Err(e) => {
+                                error!("error: {:?}", e);
+                                update_status(&mut display, "Error: invalid port specified.");
+                                continue;
+                            }
+                        };
+                        self.btn_detect.deactivate();
+                        self.btn_flash.deactivate();
+
+                        let state_clone = self.state.clone();
+                        let display_clone = self.display.clone();
+                        let mut btn_detect_clone = self.btn_detect.clone();
+                        let mut btn_flash_clone = self.btn_flash.clone();
+                        tokio::spawn(async move {
+                            let ip = state_clone.lock().unwrap().ip.clone();
+                            match flasher::flash(ip.as_str(), port, &path, |msg| {
+                                update_status(&mut display_clone.lock().unwrap(), msg);
+                            }).await {
+                                Ok(_) => {
+                                    update_status(&mut display_clone.lock().unwrap(), "Done.");
+                                    btn_detect_clone.activate();
+                                    btn_flash_clone.activate();
+                                },
+                                Err(e) => {
+                                    error!("error: {:?}", e);
+                                    update_status(&mut display_clone.lock().unwrap(), format!("Error: {}", e).as_str());
+                                    btn_detect_clone.activate();
+                                    btn_flash_clone.activate();
+                                }
+                            }
+                        });
+                    },
+                }
+            }
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() {
     env_logger::builder()
         .filter_level(LevelFilter::Info)
         .init();
 
-    let app = app::App::default().with_scheme(app::Scheme::Gtk);
-    let (x, y) = center();
-    let (w, h) = (600, 400);
-    let mut wind = Window::new(x - w/2, y - h/2, w, h, "RubyFPV simple flasher");
-    wind.make_resizable(true);
-    let mut container = Flex::default().size_of_parent().column();
-    container.set_margin(12);
-
-    let mut flex = Flex::default().size_of_parent().row();
-    container.fixed(&flex, 29);
-    let frame = Frame::default()
-            .with_label("IP address:")
-            .with_align(enums::Align::Inside);
-    flex.fixed(&frame, 70);
-    let ip_field = Input::default();
-    let frame = Frame::default()
-            .with_label("port:")
-            .with_align(enums::Align::Inside);
-    flex.fixed(&frame, 30);
-    let mut port_field = Input::default().with_type(InputType::Int);
-    port_field.set_value("22");
-    flex.fixed(&port_field, 70);
-
-    let mut btn_flash = Button::default().with_label("Flash firmware...");
-    flex.end();
-    let flex2 = Flex::default().size_of_parent().row();
-    let display_state = DisplayState::new();
-    flex2.end();
-    container.end();
-    wind.end();
-    wind.show();
-
-    btn_flash.set_callback(move |btn_self| {
-        let path = match choose_file() {
-            Some(path) => path,
-            None => return,
-        };
-        let mut buffer = display_state.clone();
-        let ip_addr = ip_field.value();
-        let port: u16 = match port_field.value().parse() {
-            Ok(v) => v,
-            Err(e) => {
-                error!("error: {:?}", e);
-                update_status(&mut buffer, "Error: invalid port specified.");
-                return;
-            }
-        };
-        btn_self.deactivate();
-        let mut btn_ref = btn_self.clone();
-        tokio::spawn(async move {
-            match flasher::flash(&ip_addr, port, &path, |msg| {
-                update_status(&mut buffer, msg);
-            }).await {
-                Ok(_) => {
-                    update_status(&mut buffer, "Done.");
-                    btn_ref.activate();
-                },
-                Err(e) => {
-                    error!("error: {:?}", e);
-                    update_status(&mut buffer, format!("Error: {}", e).as_str());
-                    btn_ref.activate();
-                }
-            }
-        });
-    });
-    app.run().unwrap();
+    let a = RubyFlasher::new();
+    a.run();
 }

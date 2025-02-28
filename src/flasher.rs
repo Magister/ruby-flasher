@@ -1,11 +1,11 @@
 use anyhow::{Error, Result};
-use async_trait::async_trait;
+use client::{Handle, Msg};
+use keys::ssh_key;
 use log::{error, info};
 use russh::*;
-use russh_keys::*;
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
-use std::io::Cursor;
+use std::io::Write;
 use std::path::Path;
 use std::time::Duration;
 use std::{net::IpAddr, str::FromStr, sync::Arc};
@@ -13,7 +13,6 @@ use std::str;
 
 struct Client;
 
-#[async_trait]
 impl client::Handler for Client {
     type Error = Error;
 
@@ -37,7 +36,41 @@ async fn connect(ip: IpAddr, port: u16) -> Result<russh::client::Handle<Client>>
     return Ok(session);
 }
 
-async fn transfer_file<F>(src: &str, dst: &str, session: &mut russh::client::Handle<Client>, mut status_update: F) -> Result<()> where F: FnMut(&str) {
+// Helper function to wait for SCP acknowledgment
+async fn wait_for_acknowledgment(channel: &mut russh::Channel<Msg>) -> Result<()> {
+    let timeout_duration = Duration::from_secs(30);
+
+    match tokio::time::timeout(timeout_duration, channel.wait()).await {
+        Ok(Some(russh::ChannelMsg::Data { ref data })) => {
+            if data.len() >= 1 {
+                match data[0] {
+                    0 => Ok(()), // Success
+                    1 => {
+                        let error_msg = if data.len() > 1 {
+                            String::from_utf8_lossy(&data[1..]).to_string()
+                        } else {
+                            "Unknown SCP error".to_string()
+                        };
+                        Err(anyhow::anyhow!("SCP error: {}", error_msg).into())
+                    },
+                    2 => Err(anyhow::anyhow!("SCP fatal error").into()),
+                    _ => Err(anyhow::anyhow!("Unknown SCP response: {}", data[0]).into()),
+                }
+            } else {
+                Err(anyhow::anyhow!("Empty SCP response").into())
+            }
+        },
+        Ok(Some(russh::ChannelMsg::Success)) => Ok(()),
+        Ok(Some(msg)) => {
+            info!("Received msg: {:?}", msg);
+            Ok(())
+        },
+        Ok(None) => Err(anyhow::anyhow!("Channel closed unexpectedly").into()),
+        Err(_) => Err(anyhow::anyhow!("Timeout waiting for SCP acknowledgment").into()),
+    }
+}
+
+async fn transfer_file<F>(src: &str, dst: &str, session: &mut Handle<Client>, mut status_update: F) -> Result<()> where F: FnMut(&str) {
     // Read the file into memory
     let mut src_file = File::open(src).await?;
     let mut file_contents = Vec::new();
@@ -50,6 +83,9 @@ async fn transfer_file<F>(src: &str, dst: &str, session: &mut russh::client::Han
     let mut channel = session.channel_open_session().await?;
     channel.exec(true, format!("scp -t {}", dst)).await?;
 
+    // Wait for initial acknowledgment (0x00 byte)
+    wait_for_acknowledgment(&mut channel).await?;
+
     let mut total_sent = 0;
 
     // Send the SCP command
@@ -61,24 +97,19 @@ async fn transfer_file<F>(src: &str, dst: &str, session: &mut russh::client::Han
         percent, total_sent, total_size
     ));
 
+    // Wait for acknowledgment of the command
+    wait_for_acknowledgment(&mut channel).await?;
+
     // Send the file contents in chunks
     const CHUNK_SIZE: usize = 1024 * 64; // 64KB chunks
-    let mut cursor = Cursor::new(file_contents);
-    let mut buffer = vec![0u8; CHUNK_SIZE];
-    
-    loop {
-        let pos = cursor.position() as usize;
-        let slice = cursor.get_mut(); // Get mutable access to the underlying Vec, but only after pos
-        if pos >= slice.len() {
-            break; // End of file
-        }
-        let remaining = slice.len() - pos;
-        let to_read = CHUNK_SIZE.min(remaining);
-        buffer[..to_read].copy_from_slice(&slice[pos..pos + to_read]);
-        cursor.set_position((pos + to_read) as u64);
 
-        channel.data(&buffer[..to_read]).await?;
-        total_sent += to_read;
+    for chunk_start in (0..file_contents.len()).step_by(CHUNK_SIZE) {
+        let chunk_end = std::cmp::min(chunk_start + CHUNK_SIZE, file_contents.len());
+        let chunk = &file_contents[chunk_start..chunk_end];
+
+        tokio::time::timeout(Duration::from_secs(30), channel.data(chunk)).await??;
+        total_sent += chunk.len();
+
         let percent = (total_sent as f64 / total_size as f64 * 100.0).min(100.0);
         status_update(&format!(
             "Progress: {:.1}% ({} / {} bytes)",
@@ -95,39 +126,78 @@ async fn transfer_file<F>(src: &str, dst: &str, session: &mut russh::client::Han
         percent, total_sent, total_size
     ));
 
+    // Wait for final acknowledgment
+    wait_for_acknowledgment(&mut channel).await?;
+
     // Finish up
-    channel.eof().await?;
-    let _msg = channel
-        .wait()
-        .await
-        .ok_or_else(|| anyhow::anyhow!("Channel closed unexpectedly"))?;
+    tokio::time::timeout(Duration::from_secs(5), channel.eof()).await??;
+
+    info!("consuming leftovers if any...");
+    // consume leftovers
+    loop {
+       match tokio::time::timeout(Duration::from_secs(30), channel.wait()).await {
+            Ok(msg) => {
+                if msg.is_none() {
+                    break;
+                }
+            },
+            Err(_) => (),
+        }
+    }
+    tokio::time::timeout(Duration::from_secs(5), channel.close()).await??;
 
     status_update("File sent successfully!");
     Ok(())
 }
 
-async fn run_command<F>(session: &mut russh::client::Handle<Client>, command: &str, mut status_update: F) -> Result<String> where F: FnMut(&str) {
+async fn run_command<F>(session: &mut Handle<Client>, command: &str, mut status_update: F) -> Result<String> where F: FnMut(&str) {
     info!("# {}", command);
+    //tokio::time::sleep(Duration::from_secs(2)).await;
     status_update(format!("# {}", command).as_str());
-    let mut channel = session.channel_open_session().await?;
-    channel.exec(true, command).await?;
     let mut result: Option<u32> = None;
     let mut res = String::new();
-    while let Some(msg) = channel.wait().await {
+    let mut buf: Vec<u8> = Vec::new();
+    let mut channel = session.channel_open_session().await?;
+    channel.exec(true, command).await?;
+
+    while let Some(msg) = tokio::time::timeout(Duration::from_secs(30), channel.wait()).await? {
         match msg {
             russh::ChannelMsg::Data { ref data } => {
-                let str_msg = String::from_utf8_lossy(data);
-                res.push_str(&str_msg);
-                for line in str_msg.split("\n") {
-                    let trimmed = line.trim();
-                    if trimmed.len() > 0 {
-                        info!("{}", trimmed);
-                        status_update(trimmed);
-                        if line.starts_with("Unconditional reboot") {
-                            break;
+                buf.write_all(data)?;
+                // Try to decode as much valid UTF-8 as possible
+                let (valid_str, remaining) = match String::from_utf8(buf.clone()) {
+                    Ok(msg) => {
+                        // All data is valid UTF-8
+                        (msg, Vec::new())
+                    },
+                    Err(e) => {
+                        // Extract valid UTF-8 prefix
+                        let valid_up_to = e.utf8_error().valid_up_to();
+                        if valid_up_to > 0 {
+                            let valid_part = String::from_utf8(buf[..valid_up_to].to_vec()).unwrap();
+                            let remaining = buf[valid_up_to..].to_vec();
+                            (valid_part, remaining)
+                        } else {
+                            // No valid UTF-8 found, wait for more data
+                            (String::new(), buf.clone())
+                        }
+                    }
+                };
+                if !valid_str.is_empty() {
+                    res.push_str(&valid_str);
+                    for line in valid_str.split('\n') {
+                        let trimmed = line.trim();
+                        if !trimmed.is_empty() {
+                            status_update(trimmed);
+                            if line.contains("Unconditional reboot") {
+                                break;
+                            }
                         }
                     }
                 }
+
+                // Update buffer with remaining bytes
+                buf = remaining;
             }
             russh::ChannelMsg::ExtendedData { ref data, ext } => {
                 if ext == 1 {
@@ -150,9 +220,41 @@ async fn run_command<F>(session: &mut russh::client::Handle<Client>, command: &s
             _ => {}
         }
     };
+
+    // Try to handle any remaining data in buffer
+    if !buf.is_empty() {
+        let msg = String::from_utf8_lossy(&buf);
+        res.push_str(&msg);
+        for line in msg.split('\n') {
+            let trimmed = line.trim();
+            if !trimmed.is_empty() {
+                status_update(trimmed);
+            }
+        }
+    }
+
     // Finish up
     tokio::time::timeout(Duration::from_secs(5), channel.eof()).await??;
+
+    info!("consuming leftovers if any...");
+    // consume leftovers
+    loop {
+       match tokio::time::timeout(Duration::from_secs(30), channel.wait()).await {
+            Ok(msg) => {
+                if msg.is_none() {
+                    break;
+                }
+            },
+            Err(_) => (),
+        }
+    }
+
+    info!("closing channel");
     tokio::time::timeout(Duration::from_secs(5), channel.close()).await??;
+
+    status_update(format!("command '{}' done.", command).as_str());
+
+    // tokio::time::sleep(Duration::from_secs(1)).await;
 
     match result {
         Some(exit_status) if exit_status != 0 => {
@@ -162,13 +264,13 @@ async fn run_command<F>(session: &mut russh::client::Handle<Client>, command: &s
     }
 }
 
-fn replace_extension(filename: &str, new_ext: &str) -> String {
-    let path = Path::new(filename);
-    match path.extension() {
-        Some(_) => path.with_extension(new_ext).to_string_lossy().into_owned(),
-        None => filename.to_string(), // Return original if no extension
-    }
-}
+// fn replace_extension(filename: &str, new_ext: &str) -> String {
+//     let path = Path::new(filename);
+//     match path.extension() {
+//         Some(_) => path.with_extension(new_ext).to_string_lossy().into_owned(),
+//         None => filename.to_string(), // Return original if no extension
+//     }
+// }
 
 fn extract_filename(src: &str) -> Result<String> {
     let path = Path::new(&src);
@@ -179,19 +281,27 @@ fn extract_filename(src: &str) -> Result<String> {
     }
 }
 
+pub(crate) async fn detect_soc<F>(ip_addr: &str, port: u16, mut status_update: F) -> Result<String> where F: FnMut(&str) {
+    let ip = IpAddr::from_str(&ip_addr)?;
+    let mut session = connect(ip, port).await?;
+    let soc = run_command(&mut session, "fw_printenv -n soc", &mut status_update).await?.trim().to_string();
+    session.disconnect(Disconnect::ByApplication, "", "en").await?;
+    Ok(soc)
+}
+
 pub(crate) async fn flash<F>(ip_addr: &str, port: u16, src: &str, mut status_update: F) -> Result<()> where F: FnMut(&str) {
     let ip = IpAddr::from_str(&ip_addr)?;
     let fname = extract_filename(&src)?;
     let dst = format!("/tmp/{}", fname);
-    let dst_tar = replace_extension(&dst, "tar");
+    // let dst_tar = replace_extension(&dst, "tar");
     status_update(format!("Connecting to {}:{}...", ip_addr, port).as_str());
     let mut session = connect(ip, port).await?;
     let soc = run_command(&mut session, "fw_printenv -n soc", &mut status_update).await?.trim().to_string();
     run_command(&mut session, "ruby_stop.sh || true", &mut status_update).await?;
     status_update(format!("Uploading firmware {}...", fname).as_str());
     transfer_file(&src, &dst, &mut session, &mut status_update).await?;
-    run_command(&mut session, format!("gunzip {} && ls -ls {}", dst, dst_tar).as_str(), &mut status_update).await?;
-    run_command(&mut session, format!("sleep 2 && tar -xvf {} -C /tmp && sync && sleep 2", dst_tar).as_str(), &mut status_update).await?;
-    run_command(&mut session, format!("sleep 2 && sysupgrade --kernel=/tmp/uImage.{} --rootfs=/tmp/rootfs.squashfs.{} -z", soc, soc).as_str(), &mut status_update).await?;
+    run_command(&mut session, format!("sh -c 'gunzip -c {} | tar -xvC /tmp'", dst).as_str(), &mut status_update).await?;
+    run_command(&mut session, format!("sysupgrade --kernel=/tmp/uImage.{} --rootfs=/tmp/rootfs.squashfs.{} -z", soc, soc).as_str(), &mut status_update).await?;
+    session.disconnect(Disconnect::ByApplication, "", "en").await?;
     Ok(())
 }
