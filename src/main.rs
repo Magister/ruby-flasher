@@ -123,7 +123,7 @@ fn update_status(text_display: &mut DisplayState, status: &str) {
 fn choose_file(soc: &str) -> Option<String> {
     let mut dialog = fltk::dialog::NativeFileChooser::new(fltk::dialog::NativeFileChooserType::BrowseFile);
     dialog.set_option(fltk::dialog::NativeFileChooserOptions::UseFilterExt);
-    dialog.set_filter(format!("{}_rubyfpv_*.tgz", soc).as_str());
+    dialog.set_filter(format!("*{}_rubyfpv_*.tgz", soc).as_str());
     match dialog.try_show() {
         Err(e) => {
             error!("error: {:?}", e);
