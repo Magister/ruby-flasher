@@ -1,6 +1,6 @@
 [package]
 name = "ruby-flasher"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 build = "build.rs"
 
@@ -29,8 +29,8 @@ rust-embed="8.6.0"
 
 [package.metadata.bundle]
 name = "RubyFPV Flasher"
+icon = ["assets/ruby.ico"]
 identifier = "com.magister.rubyfpv_flasher"
-version = "1.0.0"
 
 [profile.release]
 strip = true

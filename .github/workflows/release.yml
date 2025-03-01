@@ -1,0 +1,127 @@
+permissions:
+  contents: write
+
+on:
+  release:
+    types: [created]
+
+env:
+  # Disable incremental compilation for faster from-scratch builds
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  build-windows:
+    runs-on: windows-2019
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Update Rust toolchain
+        run: rustup update && rustup default stable
+
+      - name: Build Windows executable
+        run: cargo build --release
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ruby-flasher-windows
+          path: target/release/ruby-flasher.exe
+
+      - name: Upload Windows build to GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: target/release/ruby-flasher.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-linux:
+    runs-on: ubuntu-20.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        run: sudo apt-get update && sudo apt-get install -y libx11-dev libxext-dev libxft-dev libxinerama-dev libxcursor-dev libxrender-dev libxfixes-dev libpango1.0-dev libgl1-mesa-dev libglu1-mesa-dev
+
+      - name: Install AppImage tooling
+        run: |
+          wget -O appimagetool https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool
+          sudo mv appimagetool /usr/local/bin/
+
+      - name: Update Rust toolchain
+        run: rustup update && rustup default stable
+
+      - name: Install cargo-appimage
+        run: cargo install cargo-appimage
+
+      - name: Build AppImage
+        run: cargo appimage
+
+      - name: Upload Linux artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ruby-flasher-linux
+          path: target/appimage/ruby-flasher.AppImage
+
+      - name: Upload Linux build to GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: target/appimage/ruby-flasher.AppImage
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-macos:
+    runs-on: macos-13
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Update Rust toolchain
+        run: rustup update && rustup default stable
+
+      - name: Add macOS build targets
+        run: rustup target add x86_64-apple-darwin aarch64-apple-darwin
+
+      - name: Install cargo-bundle
+        run: cargo install cargo-bundle
+
+      - name: Create macOS app bundle
+        run: cargo bundle --release --target x86_64-apple-darwin
+
+      - name: Build for aarch64 (Apple Silicon)
+        run: cargo build --release --target aarch64-apple-darwin
+
+      - name: Create universal binary
+        run: |
+          mkdir -p target/universal-macos
+          lipo -create -output target/universal-macos/ruby-flasher \
+          target/x86_64-apple-darwin/release/bundle/osx/RubyFPV\ Flasher.app/Contents/MacOS/ruby-flasher \
+          target/aarch64-apple-darwin/release/ruby-flasher
+
+      - name: Replace bundled binary with universal binary
+        run: cp target/universal-macos/ruby-flasher target/x86_64-apple-darwin/release/bundle/osx/RubyFPV\ Flasher.app/Contents/MacOS/
+
+      - name: Create DMG
+        run: |
+          mkdir -p ./dist
+          npm install --global create-dmg
+          create-dmg target/x86_64-apple-darwin/release/bundle/osx/RubyFPV\ Flasher.app ./dist
+        continue-on-error: true
+
+      - name: Rename DMG
+        run: mv ./dist/RubyFPV*.dmg ./dist/ruby-flasher.dmg
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ruby-flasher-macos
+          path: dist/ruby-flasher.dmg
+
+      - name: Upload macOS build to GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: dist/ruby-flasher.dmg
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
