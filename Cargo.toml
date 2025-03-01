@@ -1,7 +1,7 @@
 [package]
 name = "ruby-flasher"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 build = "build.rs"
 
 [target.'cfg(target_os = "windows")'.dependencies]
@@ -34,4 +34,18 @@ version = "1.0.0"
 
 [profile.release]
 strip = true
+opt-level = "z"
 lto = true
+codegen-units = 1
+panic = "abort"
+
+[package.metadata.appimage]
+auto_link = true
+auto_link_exclude_list = [
+    "ld-linux*",
+    "libX*",
+    "libx*",
+    "libc.so*",
+    "libdl.so*",
+    "libpthread.so*",
+]

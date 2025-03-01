@@ -184,6 +184,7 @@ impl RubyFlasher {
         let (x, y) = center();
         let (w, h) = (600, 400);
         let mut wind = Window::new(x - w/2, y - h/2, w, h, "RubyFPV simple flasher");
+        wind.set_xclass(wind.label().as_str());
         wind.make_resizable(true);
         let bytes = Asset::get("ruby.ico").unwrap();
         let image = IcoImage::from_data(&bytes.data).unwrap();
