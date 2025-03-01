@@ -654,6 +654,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "fltk-theme"
+version = "0.7.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "40d05a4e6dbc150473f5d765e1e1839961f86bf3a9169b0e06e0c91ba65eb843"
+dependencies = [
+ "fltk",
+]
+
+[[package]]
 name = "flurry"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1390,11 +1399,13 @@ dependencies = [
  "async-trait",
  "env_logger",
  "fltk",
+ "fltk-theme",
  "log",
  "russh",
  "rust-embed",
  "tokio",
  "winapi",
+ "winreg",
  "winresource",
 ]
 
@@ -2308,6 +2319,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0e7f4ea97f6f78012141bcdb6a216b2609f0979ada50b20ca5b52dde2eac2bb1"
 dependencies = [
  "memchr",
+]
+
+[[package]]
+name = "winreg"
+version = "0.55.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cb5a765337c50e9ec252c2069be9bf91c7df47afb103b642ba3a53bf8101be97"
+dependencies = [
+ "cfg-if",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

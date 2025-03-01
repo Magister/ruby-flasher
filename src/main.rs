@@ -1,8 +1,9 @@
 #![windows_subsystem = "windows"]
 
-use std::sync::{Arc, Mutex};
+use std::{process::Command, sync::{Arc, Mutex}};
 
-use fltk::{app::{self}, button::Button, enums::{self, Color, Font}, frame::Frame, group::Flex, image::IcoImage, input::{Input, InputType}, prelude::*, text::{StyleTableEntry, TextBuffer, TextDisplay}, window::Window};
+use fltk::{app, button::Button, enums::{self, Color, Font}, frame::Frame, group::Flex, image::IcoImage, input::{Input, InputType}, prelude::*, text::{StyleTableEntry, TextBuffer, TextDisplay}, window::Window};
+use fltk_theme::{color_themes, ColorTheme};
 use log::{error, info, LevelFilter};
 use rust_embed::RustEmbed;
 #[derive(RustEmbed)]
@@ -18,6 +19,83 @@ struct DisplayState {
     style_buf: TextBuffer,
 }
 
+fn is_dark_mode() -> bool {
+    // macOS-specific check
+    #[cfg(target_os = "macos")]
+    {
+        let output = Command::new("defaults")
+            .args(["read", "NSGlobalDomain", "AppleInterfaceStyle"])
+            .output();
+        match output {
+            Ok(output) => {
+                let result = String::from_utf8_lossy(&output.stdout);
+                result.trim() == "Dark"
+            }
+            Err(_) => false, // Default to light mode if check fails
+        }
+    }
+
+    // Windows-specific check
+    #[cfg(target_os = "windows")]
+    {
+        use winreg::enums::*;
+        use winreg::RegKey;
+
+        let hkey = RegKey::predef(HKEY_CURRENT_USER);
+        match hkey.open_subkey("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize") {
+            Ok(key) => {
+                match key.get_value::<u32, _>("AppsUseLightTheme") {
+                    Ok(value) => value == 0, // 0 means dark mode, 1 means light mode
+                    Err(_) => false, // Default to light mode if value not found
+                }
+            }
+            Err(_) => false, // Default to light mode if registry key not accessible
+        }
+    }
+
+    // Linux-specific check (GNOME example)
+    #[cfg(target_os = "linux")]
+    {
+        let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default().to_lowercase();
+
+        // KDE check
+        if desktop.contains("kde") || desktop.contains("plasma") {
+            if let Ok(output) = Command::new("kreadconfig5")
+                .args(["--file", "kdeglobals", "--group", "KDE", "--key", "widgetStyle"])
+                .output()
+            {
+                let result = String::from_utf8_lossy(&output.stdout);
+                return result.to_lowercase().contains("dark");
+            }
+        }
+
+        // GNOME check
+        if desktop.contains("gnome") || desktop.contains("gtk") {
+            if let Ok(output) = Command::new("gsettings")
+                .args(["get", "org.gnome.desktop.interface", "gtk-theme"])
+                .output()
+            {
+                let result = String::from_utf8_lossy(&output.stdout);
+                return result.to_lowercase().contains("dark");
+            }
+        }
+
+        // Fallback: check QT_STYLE_OVERRIDE or GTK_THEME
+        std::env::var("QT_STYLE_OVERRIDE")
+            .map(|theme| theme.to_lowercase().contains("dark"))
+            .unwrap_or(false)
+            || std::env::var("GTK_THEME")
+            .map(|theme| theme.to_lowercase().contains("dark"))
+            .unwrap_or(false)
+    }
+
+    // Fallback for unsupported platforms
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    {
+        false // Default to light mode
+    }
+}
+
 impl DisplayState {
     fn new() -> Self {
         let mut disp = TextDisplay::default();
@@ -25,17 +103,30 @@ impl DisplayState {
         let text_buf = TextBuffer::default();
         let style_buf = TextBuffer::default();
         disp.set_buffer(text_buf.clone());
-        
-        // Define style table (maps single-character style tags to colors)
-        let styles = vec![
-            StyleTableEntry { color: Color::Black, font: Font::Courier, size: 12 },  // 'A' = Black
-            StyleTableEntry { color: Color::Red, font: Font::Courier, size: 12 },    // 'B' = Red
-            StyleTableEntry { color: Color::Green, font: Font::Courier, size: 12 },  // 'C' = Green
-            StyleTableEntry { color: Color::Blue, font: Font::Courier, size: 12 },   // 'D' = Blue
-            StyleTableEntry { color: Color::Magenta, font: Font::Courier, size: 12 },// 'E' = Magenta
-            StyleTableEntry { color: Color::Cyan, font: Font::Courier, size: 12 },   // 'F' = Cyan
-            StyleTableEntry { color: Color::Dark3, font: Font::Courier, size: 12 },  // 'G' = Non-printable ASCII (Gray)
+
+        // Define style tables for light and dark modes
+        let light_styles = vec![
+            StyleTableEntry { color: Color::from_rgb(0, 0, 0), font: Font::Courier, size: 12 },      // 'A' = Black
+            StyleTableEntry { color: Color::from_rgb(200, 0, 0), font: Font::Courier, size: 12 },    // 'B' = Dark Red
+            StyleTableEntry { color: Color::from_rgb(0, 200, 0), font: Font::Courier, size: 12 },    // 'C' = Dark Green
+            StyleTableEntry { color: Color::from_rgb(0, 0, 200), font: Font::Courier, size: 12 },    // 'D' = Dark Blue
+            StyleTableEntry { color: Color::from_rgb(200, 0, 200), font: Font::Courier, size: 12 },  // 'E' = Dark Magenta
+            StyleTableEntry { color: Color::from_rgb(0, 200, 200), font: Font::Courier, size: 12 },  // 'F' = Dark Cyan
+            StyleTableEntry { color: Color::from_rgb(90, 90, 90), font: Font::Courier, size: 12 },   // 'G' = Dark Gray
         ];
+
+        let dark_styles = vec![
+            StyleTableEntry { color: Color::from_rgb(255, 255, 255), font: Font::Courier, size: 12 }, // 'A' = White
+            StyleTableEntry { color: Color::from_rgb(255, 100, 100), font: Font::Courier, size: 12 }, // 'B' = Light Red
+            StyleTableEntry { color: Color::from_rgb(100, 255, 100), font: Font::Courier, size: 12 }, // 'C' = Light Green
+            StyleTableEntry { color: Color::from_rgb(100, 100, 255), font: Font::Courier, size: 12 }, // 'D' = Light Blue
+            StyleTableEntry { color: Color::from_rgb(255, 100, 255), font: Font::Courier, size: 12 }, // 'E' = Light Magenta
+            StyleTableEntry { color: Color::from_rgb(100, 255, 255), font: Font::Courier, size: 12 }, // 'F' = Light Cyan
+            StyleTableEntry { color: Color::from_rgb(127, 127, 127), font: Font::Courier, size: 12 }, // 'G' = Light Gray 
+        ];
+
+        // Choose styles based on dark mode
+        let styles = if is_dark_mode() { dark_styles } else { light_styles };
 
         // Apply styles
         disp.set_highlight_data(style_buf.clone(), styles);
@@ -78,6 +169,7 @@ impl DisplayState {
                         "34" => new_style = 'D', // Blue
                         "35" => new_style = 'E', // Magenta
                         "36" => new_style = 'F', // Cyan
+                        "90" => new_style = 'G', // Gray
                         _ => {} // Ignore unsupported codes
                     }
                 }
@@ -176,9 +268,20 @@ struct RubyFlasher {
 }
 
 impl RubyFlasher {
+
     pub fn new() -> Self {
 
         let app = app::App::default().with_scheme(app::Scheme::Gtk);
+
+        // Apply theme based on system dark mode
+        let theme = if is_dark_mode() {
+            ColorTheme::new(color_themes::DARK_THEME) // Dark theme
+        } else {
+            ColorTheme::new(color_themes::GRAY_THEME) // Light theme
+        };
+        theme.apply();
+
+        // Message channel
         let (s, receiver) = app::channel();
 
         let (x, y) = center();
