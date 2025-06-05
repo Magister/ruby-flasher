@@ -322,6 +322,13 @@ fn choose_file(soc: &str) -> Option<String> {
     }
 }
 
+fn prompt_for_password() -> Option<String> {
+    match fltk::dialog::input_default("Authentication failed with default password.\nPlease enter the device password:", "") {
+        Some(password) => Some(password.to_string()),
+        _ => None,
+    }
+}
+
 pub fn center() -> (i32, i32) {
     (
         (app::screen_size().0 / 2.0) as i32,
@@ -339,6 +346,14 @@ enum Message {
     EnterManualMode,
     ExitManualMode,
     ExecuteManualCommand,
+    PromptPasswordAndRetry(RetryAction),
+}
+
+#[derive(Copy, Clone)]
+enum RetryAction {
+    DetectSoc,
+    Flash,
+    ResetDevice,
 }
 
 #[derive(Default)]
@@ -347,11 +362,13 @@ struct State {
     ip: String,
     port: String,
     manual_mode: bool,
+    password: Option<String>,
 }
 
 struct RubyFlasher {
     app: app::App,
     receiver: app::Receiver<Message>,
+    sender: app::Sender<Message>,
     display: Arc<Mutex<DisplayState>>,
     ip_input: Input,
     port_input: Input,
@@ -475,6 +492,7 @@ impl RubyFlasher {
         Self {
             app,
             receiver,
+            sender: s,
             ip_input,
             port_input,
             display,
@@ -493,12 +511,28 @@ impl RubyFlasher {
             if let Some(msg) = self.receiver.recv() {
                 match msg {
                     Message::IpChanged => {
-                        let mut state = self.state.lock().unwrap();
-                        state.ip = self.ip_input.value();
+                        self.state.lock().unwrap().ip = self.ip_input.value();
                     }
                     Message::PortChanged => {
-                        let mut state = self.state.lock().unwrap();
-                        state.port = self.port_input.value();
+                        self.state.lock().unwrap().port = self.port_input.value();
+                    }
+                    Message::PromptPasswordAndRetry(action) => {
+                        // Handle password prompting in main thread
+                        if let Some(new_password) = prompt_for_password() {
+                            self.state.lock().unwrap().password = Some(new_password);
+                            // Retry the operation
+                            match action {
+                                RetryAction::DetectSoc => self.sender.send(Message::DetectSoc),
+                                RetryAction::Flash => self.sender.send(Message::Flash),
+                                RetryAction::ResetDevice => self.sender.send(Message::ResetDevice),
+                            }
+                        } else {
+                            let mut display = self.display.lock().unwrap();
+                            update_status(&mut display, "Authentication failed and no password provided.");
+                            self.btn_detect.activate();
+                            self.btn_flash.activate();
+                            self.menu_btn.activate();
+                        }
                     }
                     Message::DetectSoc => {
                         let state = self.state.lock().unwrap();
@@ -517,11 +551,14 @@ impl RubyFlasher {
                         let mut btn_detect_clone = self.btn_detect.clone();
                         let mut btn_flash_clone = self.btn_flash.clone();
                         let mut menu_btn_clone = self.menu_btn.clone();
+                        let sender_clone = self.sender.clone();
                         tokio::spawn(async move {
                             let ip = state_clone.lock().unwrap().ip.clone();
+                            let password = state_clone.lock().unwrap().password.clone();
+
                             match flasher::detect_soc(ip.as_str(), port, |msg| {
                                 update_status(&mut display_clone.lock().unwrap(), msg);
-                            })
+                            }, password.as_deref())
                             .await
                             {
                                 Ok(soc) => {
@@ -531,7 +568,22 @@ impl RubyFlasher {
                                     btn_flash_clone.activate();
                                     menu_btn_clone.activate();
                                 }
-                                Err(e) => {
+                                Err(flasher::ConnectionError::AuthFailure(_)) => {
+                                    // Clear failed password
+                                    state_clone.lock().unwrap().password = None;
+                                    update_status(
+                                        &mut display_clone.lock().unwrap(),
+                                        "Authentication failed. Please enter password when prompted.",
+                                    );
+                                    btn_detect_clone.activate();
+                                    btn_flash_clone.deactivate();
+                                    menu_btn_clone.deactivate();
+
+                                    // Send message to main thread to handle password input
+                                    app::awake();
+                                    sender_clone.send(Message::PromptPasswordAndRetry(RetryAction::DetectSoc));
+                                }
+                                Err(flasher::ConnectionError::Other(e)) => {
                                     error!("error: {:?}", e);
                                     update_status(
                                         &mut display_clone.lock().unwrap(),
@@ -568,11 +620,14 @@ impl RubyFlasher {
                         let mut btn_detect_clone = self.btn_detect.clone();
                         let mut btn_flash_clone = self.btn_flash.clone();
                         let mut menu_btn_clone = self.menu_btn.clone();
+                        let sender_clone = self.sender.clone();
                         tokio::spawn(async move {
                             let ip = state_clone.lock().unwrap().ip.clone();
+                            let password = state_clone.lock().unwrap().password.clone();
+
                             match flasher::flash(ip.as_str(), port, &path, |msg| {
                                 update_status(&mut display_clone.lock().unwrap(), msg);
-                            })
+                            }, password.as_deref())
                             .await
                             {
                                 Ok(_) => {
@@ -587,7 +642,22 @@ impl RubyFlasher {
                                     btn_flash_clone.activate();
                                     menu_btn_clone.activate();
                                 }
-                                Err(e) => {
+                                Err(flasher::ConnectionError::AuthFailure(_)) => {
+                                    // Clear failed password
+                                    state_clone.lock().unwrap().password = None;
+                                    update_status(
+                                        &mut display_clone.lock().unwrap(),
+                                        "Authentication failed. Please enter password when prompted.",
+                                    );
+                                    btn_detect_clone.activate();
+                                    btn_flash_clone.activate();
+                                    menu_btn_clone.activate();
+
+                                    // Send message to main thread to handle password input
+                                    app::awake();
+                                    sender_clone.send(Message::PromptPasswordAndRetry(RetryAction::Flash));
+                                }
+                                Err(flasher::ConnectionError::Other(e)) => {
                                     error!("error: {:?}", e);
                                     update_status(
                                         &mut display_clone.lock().unwrap(),
@@ -634,11 +704,14 @@ impl RubyFlasher {
                         let mut btn_detect_clone = self.btn_detect.clone();
                         let mut btn_flash_clone = self.btn_flash.clone();
                         let mut menu_btn_clone = self.menu_btn.clone();
+                        let sender_clone = self.sender.clone();
                         tokio::spawn(async move {
                             let ip = state_clone.lock().unwrap().ip.clone();
+                            let password = state_clone.lock().unwrap().password.clone();
+
                             match flasher::reset_device(ip.as_str(), port, |msg| {
                                 update_status(&mut display_clone.lock().unwrap(), msg);
-                            })
+                            }, password.as_deref())
                             .await
                             {
                                 Ok(_) => {
@@ -653,7 +726,22 @@ impl RubyFlasher {
                                     btn_flash_clone.activate();
                                     menu_btn_clone.activate();
                                 }
-                                Err(e) => {
+                                Err(flasher::ConnectionError::AuthFailure(_)) => {
+                                    // Clear failed password
+                                    state_clone.lock().unwrap().password = None;
+                                    update_status(
+                                        &mut display_clone.lock().unwrap(),
+                                        "Authentication failed. Please enter password when prompted.",
+                                    );
+                                    btn_detect_clone.activate();
+                                    btn_flash_clone.activate();
+                                    menu_btn_clone.activate();
+
+                                    // Send message to main thread to handle password input
+                                    app::awake();
+                                    sender_clone.send(Message::PromptPasswordAndRetry(RetryAction::ResetDevice));
+                                }
+                                Err(flasher::ConnectionError::Other(e)) => {
                                     error!("error: {:?}", e);
                                     update_status(
                                         &mut display_clone.lock().unwrap(),
@@ -727,9 +815,11 @@ impl RubyFlasher {
                         let display_clone = self.display.clone();
                         tokio::spawn(async move {
                             let ip = state_clone.lock().unwrap().ip.clone();
+                            let password = state_clone.lock().unwrap().password.clone();
+
                             match flasher::execute_command(ip.as_str(), port, &command, |msg| {
                                 update_status(&mut display_clone.lock().unwrap(), msg);
-                            })
+                            }, password.as_deref())
                             .await
                             {
                                 Ok(_) => {
@@ -738,7 +828,15 @@ impl RubyFlasher {
                                         "Command completed.",
                                     );
                                 }
-                                Err(e) => {
+                                Err(flasher::ConnectionError::AuthFailure(_)) => {
+                                    // Clear failed password and show message
+                                    state_clone.lock().unwrap().password = None;
+                                    update_status(
+                                        &mut display_clone.lock().unwrap(),
+                                        "Authentication failed. Please set password in a regular operation first.",
+                                    );
+                                }
+                                Err(flasher::ConnectionError::Other(e)) => {
                                     error!("error: {:?}", e);
                                     update_status(
                                         &mut display_clone.lock().unwrap(),
