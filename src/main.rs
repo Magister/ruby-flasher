@@ -1,9 +1,9 @@
 #![windows_subsystem = "windows"]
 
-use std::{
-    process::Command,
-    sync::{Arc, Mutex},
-};
+#[cfg(not(target_os = "windows"))]
+use std::process::Command;
+
+use std::sync::{Arc, Mutex};
 
 use fltk::{
     app,
