@@ -1,4 +1,4 @@
-use anyhow::{Error, Result};
+use anyhow::{Error, Result, Context};
 use async_trait::async_trait;
 use client::{Handle, Msg};
 use keys::ssh_key;
@@ -17,6 +17,72 @@ struct Client;
 
 const TIMEOUT_TINY: u64 = 5;
 const TIMEOUT_MAIN: u64 = 60;
+
+// Custom error type for authentication failures
+#[derive(Debug, thiserror::Error)]
+#[error("Authentication failed: {message}")]
+pub struct AuthError {
+    message: String,
+}
+
+impl AuthError {
+    fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+
+    fn invalid_credentials() -> Self {
+        Self::new("invalid credentials")
+    }
+
+    fn ssh_error(source: impl std::fmt::Display) -> Self {
+        Self::new(format!("SSH authentication error: {}", source))
+    }
+}
+
+// Helper function to determine if an error is an authentication failure
+pub fn is_auth_error(error: &Error) -> bool {
+    // Only check for our custom AuthError type
+    error.downcast_ref::<AuthError>().is_some()
+}
+
+// Helper function to detect auth-related errors from SSH operations and convert them to AuthError
+fn convert_potential_auth_error(error: Error) -> Error {
+    let error_str = error.to_string().to_lowercase();
+
+    // Check for auth-related messages in the error chain
+    if error_str.contains("authentication") ||
+       error_str.contains("auth") ||
+       error_str.contains("password") ||
+       error_str.contains("login") ||
+       error_str.contains("permission denied") ||
+       error_str.contains("access denied") ||
+       error_str.contains("userauth") ||
+       error_str.contains("no such user") ||
+       error_str.contains("user unknown") {
+        return AuthError::ssh_error(error).into();
+    }
+
+    // Check the error chain for authentication-related errors
+    let mut source: Option<&dyn StdError> = error.source();
+    while let Some(err) = source {
+        let err_str = err.to_string().to_lowercase();
+
+        if err_str.contains("authentication") ||
+           err_str.contains("auth") ||
+           err_str.contains("password") ||
+           err_str.contains("permission denied") ||
+           err_str.contains("access denied") {
+            return AuthError::ssh_error(error).into();
+        }
+
+        source = err.source();
+    }
+
+    // Not an auth error, return as-is
+    error
+}
 
 #[async_trait]
 impl client::Handler for Client {
@@ -49,112 +115,23 @@ async fn connect(ip: IpAddr, port: u16, password: &str) -> Result<russh::client:
                 Ok(session)
             } else {
                 error!("Authentication failed - authenticate_password returned false");
-                Err(anyhow::anyhow!("Authentication failed: invalid credentials").into())
+                Err(AuthError::invalid_credentials().into())
             }
         }
         Err(e) => {
-            error!("Authentication failed with error: {:?}", e);
-            error!("Error details: {}", e);
-            // Check error source chain
-            let mut source: Option<&dyn StdError> = e.source();
-            let mut depth = 0;
-            while let Some(src_err) = source {
-                error!("  Error source level {}: {:?}", depth, src_err);
-                error!("  Error source level {} string: {}", depth, src_err);
-                source = src_err.source();
-                depth += 1;
-                if depth > 5 { break; } // Prevent infinite loops
-            }
-            Err(e.into())
+            error!("Authentication failed: {}", e);
+            Err(convert_potential_auth_error(e.into()))
         }
     }
 }
-
-// Helper function to determine if an error is an authentication failure
-fn is_auth_error(error: &Error) -> bool {
-    // First check for our specific auth failure message
-    let error_str = error.to_string().to_lowercase();
-
-    // Our custom auth failure message - most reliable indicator
-    if error_str.contains("authentication failed: invalid credentials") {
-        return true;
-    }
-
-    // Check the main error message for common auth patterns
-    if error_str.contains("authentication") ||
-       error_str.contains("auth") ||
-       error_str.contains("password") ||
-       error_str.contains("login") ||
-       error_str.contains("permission denied") ||
-       error_str.contains("access denied") ||
-       error_str.contains("authentication failed") ||
-       error_str.contains("userauth") ||
-       error_str.contains("no such user") ||
-       error_str.contains("user unknown") {
-        return true;
-    }
-
-    // Check the error chain for authentication-related errors
-    let mut source: Option<&dyn StdError> = error.source();
-    while let Some(err) = source {
-        let err_str = err.to_string().to_lowercase();
-
-        if err_str.contains("authentication") ||
-           err_str.contains("auth") ||
-           err_str.contains("password") ||
-           err_str.contains("permission denied") ||
-           err_str.contains("access denied") {
-            return true;
-        }
-
-        source = err.source();
-    }
-
-    false
-}
-
-// Helper macro to convert any error to ConnectionError::Other
-macro_rules! other_err {
-    ($expr:expr) => {
-        $expr.map_err(|e| ConnectionError::Other(e.into()))
-    };
-}
-
-// Result type for connection attempts that can distinguish auth failures
-#[derive(Debug)]
-pub enum ConnectionError {
-    AuthFailure(Error),
-    Other(Error),
-}
-
-impl std::fmt::Display for ConnectionError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ConnectionError::AuthFailure(e) => write!(f, "Authentication failed: {}", e),
-            ConnectionError::Other(e) => write!(f, "{}", e),
-        }
-    }
-}
-
-impl std::error::Error for ConnectionError {}
 
 // Try to connect with a specific password, returning detailed error info
-async fn try_connect(ip: IpAddr, port: u16, password: &str) -> Result<russh::client::Handle<Client>, ConnectionError> {
-    info!("Attempting connection with password length: {}", password.len());
+async fn try_connect(ip: IpAddr, port: u16, password: &str) -> Result<russh::client::Handle<Client>> {
     match connect(ip, port, password).await {
-        Ok(session) => {
-            info!("Connection successful");
-            Ok(session)
-        },
+        Ok(session) => Ok(session),
         Err(e) => {
             error!("Connection failed: {}", e);
-            if is_auth_error(&e) {
-                error!("Detected as authentication error");
-                Err(ConnectionError::AuthFailure(e))
-            } else {
-                error!("Detected as non-authentication error");
-                Err(ConnectionError::Other(e))
-            }
+            Err(e)
         }
     }
 }
@@ -174,13 +151,13 @@ async fn wait_for_acknowledgment(channel: &mut russh::Channel<Msg>) -> Result<()
                         } else {
                             "Unknown SCP error".to_string()
                         };
-                        Err(anyhow::anyhow!("SCP error: {}", error_msg).into())
+                        Err(anyhow::anyhow!("SCP error: {}", error_msg))
                     },
-                    2 => Err(anyhow::anyhow!("SCP fatal error").into()),
-                    _ => Err(anyhow::anyhow!("Unknown SCP response: {}", data[0]).into()),
+                    2 => Err(anyhow::anyhow!("SCP fatal error")),
+                    _ => Err(anyhow::anyhow!("Unknown SCP response: {}", data[0])),
                 }
             } else {
-                Err(anyhow::anyhow!("Empty SCP response").into())
+                Err(anyhow::anyhow!("Empty SCP response"))
             }
         },
         Ok(Some(russh::ChannelMsg::Success)) => Ok(()),
@@ -188,8 +165,8 @@ async fn wait_for_acknowledgment(channel: &mut russh::Channel<Msg>) -> Result<()
             info!("Received msg: {:?}", msg);
             Ok(())
         },
-        Ok(None) => Err(anyhow::anyhow!("Channel closed unexpectedly").into()),
-        Err(_) => Err(anyhow::anyhow!("Timeout waiting for SCP acknowledgment").into()),
+        Ok(None) => Err(anyhow::anyhow!("Channel closed unexpectedly")),
+        Err(_) => Err(anyhow::anyhow!("Timeout waiting for SCP acknowledgment")),
     }
 }
 
@@ -406,68 +383,60 @@ fn extract_filename(src: &str) -> Result<String> {
 }
 
 // Smart connect that tries stored password first, then default if no stored password
-async fn smart_connect(ip: IpAddr, port: u16, custom_password: Option<&str>) -> Result<russh::client::Handle<Client>, ConnectionError> {
+async fn smart_connect(ip: IpAddr, port: u16, custom_password: Option<&str>) -> Result<russh::client::Handle<Client>> {
     match custom_password {
         Some(password) => {
-            info!("Using stored custom password for connection");
             // We have a stored password, try it first
-            match try_connect(ip, port, password).await {
-                Ok(session) => Ok(session),
-                Err(e) => Err(e), // Return any error (auth or otherwise) when using stored password
-            }
+            try_connect(ip, port, password).await
         }
         None => {
-            info!("No stored password, using default password (12345)");
             // No stored password, try default password
-            match try_connect(ip, port, "12345").await {
-                Ok(session) => Ok(session),
-                Err(e) => Err(e), // Return any error (auth or otherwise) when using default password
-            }
+            try_connect(ip, port, "12345").await
         }
     }
 }
 
-pub(crate) async fn detect_soc<F>(ip_addr: &str, port: u16, mut status_update: F, password: Option<&str>) -> Result<String, ConnectionError>
+pub(crate) async fn detect_soc<F>(ip_addr: &str, port: u16, mut status_update: F, password: Option<&str>) -> Result<String, Error>
 where F: FnMut(&str) {
-    let ip = other_err!(IpAddr::from_str(&ip_addr))?;
+    let ip = IpAddr::from_str(&ip_addr).context("Invalid IP address")?;
     let mut session = smart_connect(ip, port, password).await?; // This can return auth errors
-    let soc = other_err!(run_command(&mut session, "fw_printenv -n soc", &mut status_update).await)?;
-    other_err!(session.disconnect(Disconnect::ByApplication, "", "en").await)?;
+    let soc = run_command(&mut session, "fw_printenv -n soc", &mut status_update).await?;
+    session.disconnect(Disconnect::ByApplication, "", "en").await?;
     Ok(soc.trim().to_string())
 }
 
-pub(crate) async fn flash<F>(ip_addr: &str, port: u16, src: &str, mut status_update: F, password: Option<&str>) -> Result<(), ConnectionError> where F: FnMut(&str) {
-    let ip = other_err!(IpAddr::from_str(&ip_addr))?;
-    let fname = other_err!(extract_filename(&src))?;
+pub(crate) async fn flash<F>(ip_addr: &str, port: u16, src: &str, mut status_update: F, password: Option<&str>) -> Result<(), Error> where F: FnMut(&str) {
+    let ip = IpAddr::from_str(&ip_addr).context("Invalid IP address")?;
+    let fname = extract_filename(&src)?;
     let dst = format!("/tmp/{}", fname);
     status_update(format!("Connecting to {}:{}...", ip_addr, port).as_str());
     let mut session = smart_connect(ip, port, password).await?; // This can return auth errors
-    let soc = other_err!(run_command(&mut session, "fw_printenv -n soc", &mut status_update).await)?;
-    other_err!(run_command(&mut session, "ruby_stop.sh || true", &mut status_update).await)?;
+    let soc = run_command(&mut session, "fw_printenv -n soc", &mut status_update).await?;
+    run_command(&mut session, "ruby_stop.sh || true", &mut status_update).await?;
     status_update(format!("Uploading firmware {}...", fname).as_str());
-    other_err!(transfer_file(&src, &dst, &mut session, &mut status_update).await)?;
-    other_err!(run_command(&mut session, format!("sh -c 'gunzip -c {} | tar -xvC /tmp'", dst).as_str(), &mut status_update).await)?;
-    other_err!(run_command(&mut session, format!("sysupgrade --kernel=/tmp/uImage.{} --rootfs=/tmp/rootfs.squashfs.{} -z", soc.trim(), soc.trim()).as_str(), &mut status_update).await)?;
-    other_err!(session.disconnect(Disconnect::ByApplication, "", "en").await)?;
+    transfer_file(&src, &dst, &mut session, &mut status_update).await?;
+    run_command(&mut session, format!("sh -c 'gunzip -c {} | tar -xvC /tmp'", dst).as_str(), &mut status_update).await?;
+    run_command(&mut session, format!("sysupgrade --kernel=/tmp/uImage.{} --rootfs=/tmp/rootfs.squashfs.{} -z", soc.trim(), soc.trim()).as_str(), &mut status_update).await?;
+    session.disconnect(Disconnect::ByApplication, "", "en").await?;
     Ok(())
 }
 
-pub(crate) async fn reset_device<F>(ip_addr: &str, port: u16, mut status_update: F, password: Option<&str>) -> Result<(), ConnectionError> where F: FnMut(&str) {
-    let ip = other_err!(IpAddr::from_str(&ip_addr))?;
+pub(crate) async fn reset_device<F>(ip_addr: &str, port: u16, mut status_update: F, password: Option<&str>) -> Result<(), Error> where F: FnMut(&str) {
+    let ip = IpAddr::from_str(&ip_addr).context("Invalid IP address")?;
     status_update(format!("Connecting to {}:{}...", ip_addr, port).as_str());
     let mut session = smart_connect(ip, port, password).await?; // This can return auth errors
     status_update("Executing firstboot command...");
-    other_err!(run_command(&mut session, "firstboot", &mut status_update).await)?;
-    other_err!(session.disconnect(Disconnect::ByApplication, "", "en").await)?;
+    run_command(&mut session, "firstboot", &mut status_update).await?;
+    session.disconnect(Disconnect::ByApplication, "", "en").await?;
     Ok(())
 }
 
-pub(crate) async fn execute_command<F>(ip_addr: &str, port: u16, command: &str, mut status_update: F, password: Option<&str>) -> Result<(), ConnectionError> where F: FnMut(&str) {
-    let ip = other_err!(IpAddr::from_str(&ip_addr))?;
+pub(crate) async fn execute_command<F>(ip_addr: &str, port: u16, command: &str, mut status_update: F, password: Option<&str>) -> Result<(), Error> where F: FnMut(&str) {
+    let ip = IpAddr::from_str(&ip_addr).context("Invalid IP address")?;
     status_update(format!("Connecting to {}:{}...", ip_addr, port).as_str());
     let mut session = smart_connect(ip, port, password).await?; // This can return auth errors
     status_update(format!("Executing command: {}", command).as_str());
-    other_err!(run_command(&mut session, command, &mut status_update).await)?;
-    other_err!(session.disconnect(Disconnect::ByApplication, "", "en").await)?;
+    run_command(&mut session, command, &mut status_update).await?;
+    session.disconnect(Disconnect::ByApplication, "", "en").await?;
     Ok(())
 }

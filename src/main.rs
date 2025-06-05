@@ -568,7 +568,7 @@ impl RubyFlasher {
                                     btn_flash_clone.activate();
                                     menu_btn_clone.activate();
                                 }
-                                Err(flasher::ConnectionError::AuthFailure(_)) => {
+                                Err(e) if flasher::is_auth_error(&e) => {
                                     // Clear failed password
                                     state_clone.lock().unwrap().password = None;
                                     update_status(
@@ -583,7 +583,7 @@ impl RubyFlasher {
                                     app::awake();
                                     sender_clone.send(Message::PromptPasswordAndRetry(RetryAction::DetectSoc));
                                 }
-                                Err(flasher::ConnectionError::Other(e)) => {
+                                Err(e) => {
                                     error!("error: {:?}", e);
                                     update_status(
                                         &mut display_clone.lock().unwrap(),
@@ -642,7 +642,7 @@ impl RubyFlasher {
                                     btn_flash_clone.activate();
                                     menu_btn_clone.activate();
                                 }
-                                Err(flasher::ConnectionError::AuthFailure(_)) => {
+                                Err(e) if flasher::is_auth_error(&e) => {
                                     // Clear failed password
                                     state_clone.lock().unwrap().password = None;
                                     update_status(
@@ -657,7 +657,7 @@ impl RubyFlasher {
                                     app::awake();
                                     sender_clone.send(Message::PromptPasswordAndRetry(RetryAction::Flash));
                                 }
-                                Err(flasher::ConnectionError::Other(e)) => {
+                                Err(e) => {
                                     error!("error: {:?}", e);
                                     update_status(
                                         &mut display_clone.lock().unwrap(),
@@ -726,7 +726,7 @@ impl RubyFlasher {
                                     btn_flash_clone.activate();
                                     menu_btn_clone.activate();
                                 }
-                                Err(flasher::ConnectionError::AuthFailure(_)) => {
+                                Err(e) if flasher::is_auth_error(&e) => {
                                     // Clear failed password
                                     state_clone.lock().unwrap().password = None;
                                     update_status(
@@ -741,7 +741,7 @@ impl RubyFlasher {
                                     app::awake();
                                     sender_clone.send(Message::PromptPasswordAndRetry(RetryAction::ResetDevice));
                                 }
-                                Err(flasher::ConnectionError::Other(e)) => {
+                                Err(e) => {
                                     error!("error: {:?}", e);
                                     update_status(
                                         &mut display_clone.lock().unwrap(),
@@ -828,7 +828,7 @@ impl RubyFlasher {
                                         "Command completed.",
                                     );
                                 }
-                                Err(flasher::ConnectionError::AuthFailure(_)) => {
+                                Err(e) if flasher::is_auth_error(&e) => {
                                     // Clear failed password and show message
                                     state_clone.lock().unwrap().password = None;
                                     update_status(
@@ -836,7 +836,7 @@ impl RubyFlasher {
                                         "Authentication failed. Please set password in a regular operation first.",
                                     );
                                 }
-                                Err(flasher::ConnectionError::Other(e)) => {
+                                Err(e) => {
                                     error!("error: {:?}", e);
                                     update_status(
                                         &mut display_clone.lock().unwrap(),
