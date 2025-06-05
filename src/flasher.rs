@@ -321,3 +321,13 @@ pub(crate) async fn reset_device<F>(ip_addr: &str, port: u16, mut status_update:
     session.disconnect(Disconnect::ByApplication, "", "en").await?;
     Ok(())
 }
+
+pub(crate) async fn execute_command<F>(ip_addr: &str, port: u16, command: &str, mut status_update: F) -> Result<()> where F: FnMut(&str) {
+    let ip = IpAddr::from_str(&ip_addr)?;
+    status_update(format!("Connecting to {}:{}...", ip_addr, port).as_str());
+    let mut session = connect(ip, port).await?;
+    status_update(format!("Executing command: {}", command).as_str());
+    run_command(&mut session, command, &mut status_update).await?;
+    session.disconnect(Disconnect::ByApplication, "", "en").await?;
+    Ok(())
+}

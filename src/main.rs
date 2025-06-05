@@ -336,6 +336,9 @@ enum Message {
     DetectSoc,
     Flash,
     ResetDevice,
+    EnterManualMode,
+    ExitManualMode,
+    ExecuteManualCommand,
 }
 
 #[derive(Default)]
@@ -343,6 +346,7 @@ struct State {
     soc: String,
     ip: String,
     port: String,
+    manual_mode: bool,
 }
 
 struct RubyFlasher {
@@ -354,6 +358,9 @@ struct RubyFlasher {
     btn_detect: Button,
     btn_flash: Button,
     menu_btn: MenuButton,
+    manual_input: Input,
+    manual_flex: Flex,
+    container: Flex,
     state: Arc<Mutex<State>>,
 }
 
@@ -411,9 +418,28 @@ impl RubyFlasher {
         menu_btn.deactivate();
 
         flex.end();
-        let flex2 = Flex::default().size_of_parent().row();
+
+        // Main display area
         let display = Arc::new(Mutex::new(DisplayState::new()));
-        flex2.end();
+        {
+            let display_guard = display.lock().unwrap();
+            container.add(&display_guard.disp);
+        }
+
+        // Manual command input area (initially hidden)
+        let mut manual_flex = Flex::default().row();
+        let manual_label = Frame::default().with_label("Command:");
+        manual_flex.fixed(&manual_label, 70);
+        let mut manual_input = Input::default();
+        manual_flex.add(&manual_input);
+        let mut manual_exit_btn = Button::default().with_label("Exit Manual Mode");
+        manual_flex.fixed(&manual_exit_btn, 150);
+        manual_flex.end();
+
+        // Add manual flex to container and initially hide it
+        container.fixed(&manual_flex, 29);
+        manual_flex.hide(); // Initially hidden
+
         container.end();
         wind.end();
         wind.show();
@@ -423,16 +449,24 @@ impl RubyFlasher {
 
         // Set up the menu items
         menu_btn.add_choice("Reset device");
+        menu_btn.add_choice("Manual command execution");
 
         // Set up menu callback
         let s_menu = s.clone();
         menu_btn.set_callback(move |m| {
             if let Some(choice) = m.choice() {
-                if choice == "Reset device" {
-                    s_menu.send(Message::ResetDevice);
+                match choice.as_str() {
+                    "Reset device" => s_menu.send(Message::ResetDevice),
+                    "Manual command execution" => s_menu.send(Message::EnterManualMode),
+                    _ => {}
                 }
             }
         });
+
+        // Set up manual mode callbacks
+        manual_input.set_trigger(fltk::enums::CallbackTrigger::EnterKey);
+        manual_input.emit(s, Message::ExecuteManualCommand);
+        manual_exit_btn.emit(s, Message::ExitManualMode);
 
         let state = Arc::new(Mutex::new(State {
             port: "22".to_string(),
@@ -448,6 +482,9 @@ impl RubyFlasher {
             btn_detect,
             btn_flash,
             menu_btn,
+            manual_input,
+            manual_flex,
+            container,
         }
     }
 
@@ -599,6 +636,87 @@ impl RubyFlasher {
                                     btn_detect_clone.activate();
                                     btn_flash_clone.activate();
                                     menu_btn_clone.activate();
+                                }
+                            }
+                        });
+                    }
+                    Message::EnterManualMode => {
+                        info!("Entering manual mode...");
+                        let state = self.state.lock().unwrap();
+                        if !state.ip.is_empty() {
+                            drop(state); // Release the lock before acquiring it again
+                            info!("Setting manual mode to true");
+                            self.state.lock().unwrap().manual_mode = true;
+                            info!("Deactivating buttons");
+                            self.btn_detect.deactivate();
+                            self.btn_flash.deactivate();
+                            self.menu_btn.deactivate();
+                                                        info!("Showing manual flex");
+                            // Show the manual flex
+                            self.manual_flex.show();
+                            self.container.layout();
+                            info!("Taking focus");
+                            // Use a safe focus operation instead of unwrap
+                            if let Err(e) = self.manual_input.take_focus() {
+                                error!("Failed to take focus: {:?}", e);
+                            }
+                            info!("Redrawing app");
+                            app::redraw();
+                            info!("Manual mode entered successfully");
+                        } else {
+                            drop(state); // Release the lock
+                            let mut display = self.display.lock().unwrap();
+                            update_status(&mut display, "Error: Please enter an IP address first.");
+                        }
+                    }
+                    Message::ExitManualMode => {
+                        self.state.lock().unwrap().manual_mode = false;
+                        // Hide the manual flex
+                        self.manual_flex.hide();
+                        self.container.layout();
+                        self.btn_detect.activate();
+                        self.btn_flash.activate();
+                        self.menu_btn.activate();
+                        self.manual_input.set_value("");
+                        app::redraw();
+                    }
+                    Message::ExecuteManualCommand => {
+                        let state = self.state.lock().unwrap();
+                        if !state.manual_mode {
+                            return; // Ignore if not in manual mode
+                        }
+
+                        let command = self.manual_input.value().trim().to_string();
+                        if command.is_empty() {
+                            return;
+                        }
+
+                        let mut display = self.display.lock().unwrap();
+                        let port: u16 = match state.port.parse() {
+                            Ok(v) => v,
+                            Err(e) => {
+                                error!("error: {:?}", e);
+                                update_status(&mut display, "Error: invalid port specified.");
+                                return;
+                            }
+                        };
+
+                        // Clear the input for next command
+                        self.manual_input.set_value("");
+
+                        let state_clone = self.state.clone();
+                        let display_clone = self.display.clone();
+                        tokio::spawn(async move {
+                            let ip = state_clone.lock().unwrap().ip.clone();
+                            match flasher::execute_command(ip.as_str(), port, &command, |msg| {
+                                update_status(&mut display_clone.lock().unwrap(), msg);
+                            }).await {
+                                Ok(_) => {
+                                    update_status(&mut display_clone.lock().unwrap(), "Command completed.");
+                                },
+                                Err(e) => {
+                                    error!("error: {:?}", e);
+                                    update_status(&mut display_clone.lock().unwrap(), format!("Error: {}", e).as_str());
                                 }
                             }
                         });
