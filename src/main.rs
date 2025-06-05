@@ -576,7 +576,13 @@ impl RubyFlasher {
                             .await
                             {
                                 Ok(_) => {
-                                    update_status(&mut display_clone.lock().unwrap(), "Done.");
+                                    update_status(&mut display_clone.lock().unwrap(),"\n\
+                                          \x1b[32mReview the log above to ensure everything went well.\n\
+                                          The last log line should be like '\x1b[0m\x1b[1mUnconditional reboot\x1b[0m\x1b[32m'.\n\
+                                          If the log shows no errors, the firmware flash is completed.\n\
+                                          \x1b[1m\x1b[34mPlease wait 2-3 minutes for the device to completely initialize \
+                                          and do not disconnect power during this time.\x1b[0m"
+                                    );
                                     btn_detect_clone.activate();
                                     btn_flash_clone.activate();
                                     menu_btn_clone.activate();
@@ -595,6 +601,20 @@ impl RubyFlasher {
                         });
                     }
                     Message::ResetDevice => {
+                        // Show confirmation dialog
+                        let choice = fltk::dialog::choice2_default(
+                            "Are you sure you want to reset the device?\n\nThis will clear all settings from the device and make it appear as newly flashed.\n\nThe device will need 2-3 minutes to completely initialize after reset and should not be disconnected from power during this time.",
+                            "Cancel",
+                            "Reset Device",
+                            ""
+                        );
+
+                        // If user chose "Cancel" (returns Some(0)) or closed dialog (returns None), don't proceed
+                        match choice {
+                            Some(1) => {}  // User chose "Reset Device", proceed
+                            _ => continue, // User chose "Cancel" or closed dialog, don't proceed
+                        }
+
                         let state = self.state.lock().unwrap();
                         let mut display = self.display.lock().unwrap();
                         let port: u16 = match state.port.parse() {
@@ -622,7 +642,13 @@ impl RubyFlasher {
                             .await
                             {
                                 Ok(_) => {
-                                    update_status(&mut display_clone.lock().unwrap(), "Done.");
+                                    update_status(&mut display_clone.lock().unwrap(),"\n\
+                                          \x1b[32mReview the log above to ensure everything went well.\n\
+                                          The last log line should be like '\x1b[0m\x1b[1mUnconditional reboot\x1b[0m\x1b[32m'.\n\
+                                          If the log shows no errors, the reset is completed.\n\
+                                          \x1b[1m\x1b[34mPlease wait 2-3 minutes for the device to completely initialize \
+                                          and do not disconnect power during this time.\x1b[0m"
+                                    );
                                     btn_detect_clone.activate();
                                     btn_flash_clone.activate();
                                     menu_btn_clone.activate();
@@ -641,28 +667,21 @@ impl RubyFlasher {
                         });
                     }
                     Message::EnterManualMode => {
-                        info!("Entering manual mode...");
                         let state = self.state.lock().unwrap();
                         if !state.ip.is_empty() {
                             drop(state); // Release the lock before acquiring it again
-                            info!("Setting manual mode to true");
                             self.state.lock().unwrap().manual_mode = true;
-                            info!("Deactivating buttons");
                             self.btn_detect.deactivate();
                             self.btn_flash.deactivate();
                             self.menu_btn.deactivate();
-                                                        info!("Showing manual flex");
                             // Show the manual flex
                             self.manual_flex.show();
                             self.container.layout();
-                            info!("Taking focus");
                             // Use a safe focus operation instead of unwrap
                             if let Err(e) = self.manual_input.take_focus() {
                                 error!("Failed to take focus: {:?}", e);
                             }
-                            info!("Redrawing app");
                             app::redraw();
-                            info!("Manual mode entered successfully");
                         } else {
                             drop(state); // Release the lock
                             let mut display = self.display.lock().unwrap();
@@ -710,13 +729,21 @@ impl RubyFlasher {
                             let ip = state_clone.lock().unwrap().ip.clone();
                             match flasher::execute_command(ip.as_str(), port, &command, |msg| {
                                 update_status(&mut display_clone.lock().unwrap(), msg);
-                            }).await {
+                            })
+                            .await
+                            {
                                 Ok(_) => {
-                                    update_status(&mut display_clone.lock().unwrap(), "Command completed.");
-                                },
+                                    update_status(
+                                        &mut display_clone.lock().unwrap(),
+                                        "Command completed.",
+                                    );
+                                }
                                 Err(e) => {
                                     error!("error: {:?}", e);
-                                    update_status(&mut display_clone.lock().unwrap(), format!("Error: {}", e).as_str());
+                                    update_status(
+                                        &mut display_clone.lock().unwrap(),
+                                        format!("Error: {}", e).as_str(),
+                                    );
                                 }
                             }
                         });
