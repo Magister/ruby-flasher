@@ -13,6 +13,7 @@ use fltk::{
     group::Flex,
     image::IcoImage,
     input::{Input, InputType},
+    menu::MenuButton,
     prelude::*,
     text::{StyleTableEntry, TextBuffer, TextDisplay},
     window::Window,
@@ -352,7 +353,7 @@ struct RubyFlasher {
     port_input: Input,
     btn_detect: Button,
     btn_flash: Button,
-    btn_reset: Button,
+    menu_btn: MenuButton,
     state: Arc<Mutex<State>>,
 }
 
@@ -372,7 +373,7 @@ impl RubyFlasher {
         let (s, receiver) = app::channel();
 
         let (x, y) = center();
-        let (w, h) = (600, 400);
+        let (w, h) = (720, 576);
         let mut wind = Window::new(x - w / 2, y - h / 2, w, h, "RubyFPV simple flasher");
         wind.set_xclass(wind.label().as_str());
         wind.make_resizable(true);
@@ -406,8 +407,8 @@ impl RubyFlasher {
         let mut btn_flash = Button::default().with_label("Flash firmware...");
         btn_flash.deactivate();
 
-        let mut btn_reset = Button::default().with_label("Reset device");
-        btn_reset.deactivate();
+        let mut menu_btn = MenuButton::default().with_label("Actions");
+        menu_btn.deactivate();
 
         flex.end();
         let flex2 = Flex::default().size_of_parent().row();
@@ -419,7 +420,19 @@ impl RubyFlasher {
 
         btn_detect.emit(s, Message::DetectSoc);
         btn_flash.emit(s, Message::Flash);
-        btn_reset.emit(s, Message::ResetDevice);
+
+        // Set up the menu items
+        menu_btn.add_choice("Reset device");
+
+        // Set up menu callback
+        let s_menu = s.clone();
+        menu_btn.set_callback(move |m| {
+            if let Some(choice) = m.choice() {
+                if choice == "Reset device" {
+                    s_menu.send(Message::ResetDevice);
+                }
+            }
+        });
 
         let state = Arc::new(Mutex::new(State {
             port: "22".to_string(),
@@ -434,7 +447,7 @@ impl RubyFlasher {
             state,
             btn_detect,
             btn_flash,
-            btn_reset,
+            menu_btn,
         }
     }
 
@@ -466,7 +479,7 @@ impl RubyFlasher {
                         let display_clone = self.display.clone();
                         let mut btn_detect_clone = self.btn_detect.clone();
                         let mut btn_flash_clone = self.btn_flash.clone();
-                        let mut btn_reset_clone = self.btn_reset.clone();
+                        let mut menu_btn_clone = self.menu_btn.clone();
                         tokio::spawn(async move {
                             let ip = state_clone.lock().unwrap().ip.clone();
                             match flasher::detect_soc(ip.as_str(), port, |msg| {
@@ -479,7 +492,7 @@ impl RubyFlasher {
                                     update_status(&mut display_clone.lock().unwrap(), "Done.");
                                     btn_detect_clone.activate();
                                     btn_flash_clone.activate();
-                                    btn_reset_clone.activate();
+                                    menu_btn_clone.activate();
                                 }
                                 Err(e) => {
                                     error!("error: {:?}", e);
@@ -489,7 +502,7 @@ impl RubyFlasher {
                                     );
                                     btn_detect_clone.activate();
                                     btn_flash_clone.deactivate();
-                                    btn_reset_clone.deactivate();
+                                    menu_btn_clone.deactivate();
                                 }
                             }
                         });
@@ -511,13 +524,13 @@ impl RubyFlasher {
                         };
                         self.btn_detect.deactivate();
                         self.btn_flash.deactivate();
-                        self.btn_reset.deactivate();
+                        self.menu_btn.deactivate();
 
                         let state_clone = self.state.clone();
                         let display_clone = self.display.clone();
                         let mut btn_detect_clone = self.btn_detect.clone();
                         let mut btn_flash_clone = self.btn_flash.clone();
-                        let mut btn_reset_clone = self.btn_reset.clone();
+                        let mut menu_btn_clone = self.menu_btn.clone();
                         tokio::spawn(async move {
                             let ip = state_clone.lock().unwrap().ip.clone();
                             match flasher::flash(ip.as_str(), port, &path, |msg| {
@@ -529,7 +542,7 @@ impl RubyFlasher {
                                     update_status(&mut display_clone.lock().unwrap(), "Done.");
                                     btn_detect_clone.activate();
                                     btn_flash_clone.activate();
-                                    btn_reset_clone.activate();
+                                    menu_btn_clone.activate();
                                 }
                                 Err(e) => {
                                     error!("error: {:?}", e);
@@ -539,7 +552,7 @@ impl RubyFlasher {
                                     );
                                     btn_detect_clone.activate();
                                     btn_flash_clone.activate();
-                                    btn_reset_clone.activate();
+                                    menu_btn_clone.activate();
                                 }
                             }
                         });
@@ -557,13 +570,13 @@ impl RubyFlasher {
                         };
                         self.btn_detect.deactivate();
                         self.btn_flash.deactivate();
-                        self.btn_reset.deactivate();
+                        self.menu_btn.deactivate();
 
                         let state_clone = self.state.clone();
                         let display_clone = self.display.clone();
                         let mut btn_detect_clone = self.btn_detect.clone();
                         let mut btn_flash_clone = self.btn_flash.clone();
-                        let mut btn_reset_clone = self.btn_reset.clone();
+                        let mut menu_btn_clone = self.menu_btn.clone();
                         tokio::spawn(async move {
                             let ip = state_clone.lock().unwrap().ip.clone();
                             match flasher::reset_device(ip.as_str(), port, |msg| {
@@ -575,7 +588,7 @@ impl RubyFlasher {
                                     update_status(&mut display_clone.lock().unwrap(), "Done.");
                                     btn_detect_clone.activate();
                                     btn_flash_clone.activate();
-                                    btn_reset_clone.activate();
+                                    menu_btn_clone.activate();
                                 }
                                 Err(e) => {
                                     error!("error: {:?}", e);
@@ -585,7 +598,7 @@ impl RubyFlasher {
                                     );
                                     btn_detect_clone.activate();
                                     btn_flash_clone.activate();
-                                    btn_reset_clone.activate();
+                                    menu_btn_clone.activate();
                                 }
                             }
                         });
