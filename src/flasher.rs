@@ -311,3 +311,13 @@ pub(crate) async fn flash<F>(ip_addr: &str, port: u16, src: &str, mut status_upd
     session.disconnect(Disconnect::ByApplication, "", "en").await?;
     Ok(())
 }
+
+pub(crate) async fn reset_device<F>(ip_addr: &str, port: u16, mut status_update: F) -> Result<()> where F: FnMut(&str) {
+    let ip = IpAddr::from_str(&ip_addr)?;
+    status_update(format!("Connecting to {}:{}...", ip_addr, port).as_str());
+    let mut session = connect(ip, port).await?;
+    status_update("Executing firstboot command...");
+    run_command(&mut session, "firstboot", &mut status_update).await?;
+    session.disconnect(Disconnect::ByApplication, "", "en").await?;
+    Ok(())
+}

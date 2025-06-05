@@ -1,8 +1,22 @@
 #![windows_subsystem = "windows"]
 
-use std::{process::Command, sync::{Arc, Mutex}};
+use std::{
+    process::Command,
+    sync::{Arc, Mutex},
+};
 
-use fltk::{app, button::Button, enums::{self, Color, Font}, frame::Frame, group::Flex, image::IcoImage, input::{Input, InputType}, prelude::*, text::{StyleTableEntry, TextBuffer, TextDisplay}, window::Window};
+use fltk::{
+    app,
+    button::Button,
+    enums::{self, Color, Font},
+    frame::Frame,
+    group::Flex,
+    image::IcoImage,
+    input::{Input, InputType},
+    prelude::*,
+    text::{StyleTableEntry, TextBuffer, TextDisplay},
+    window::Window,
+};
 use fltk_theme::{color_themes, ColorTheme};
 use log::{error, info, LevelFilter};
 use rust_embed::RustEmbed;
@@ -42,11 +56,12 @@ fn is_dark_mode() -> bool {
         use winreg::RegKey;
 
         let hkey = RegKey::predef(HKEY_CURRENT_USER);
-        match hkey.open_subkey("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize") {
+        match hkey.open_subkey("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize")
+        {
             Ok(key) => {
                 match key.get_value::<u32, _>("AppsUseLightTheme") {
                     Ok(value) => value == 0, // 0 means dark mode, 1 means light mode
-                    Err(_) => false, // Default to light mode if value not found
+                    Err(_) => false,         // Default to light mode if value not found
                 }
             }
             Err(_) => false, // Default to light mode if registry key not accessible
@@ -56,12 +71,21 @@ fn is_dark_mode() -> bool {
     // Linux-specific check (GNOME example)
     #[cfg(target_os = "linux")]
     {
-        let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default().to_lowercase();
+        let desktop = std::env::var("XDG_CURRENT_DESKTOP")
+            .unwrap_or_default()
+            .to_lowercase();
 
         // KDE check
         if desktop.contains("kde") || desktop.contains("plasma") {
             if let Ok(output) = Command::new("kreadconfig5")
-                .args(["--file", "kdeglobals", "--group", "KDE", "--key", "widgetStyle"])
+                .args([
+                    "--file",
+                    "kdeglobals",
+                    "--group",
+                    "KDE",
+                    "--key",
+                    "widgetStyle",
+                ])
                 .output()
             {
                 let result = String::from_utf8_lossy(&output.stdout);
@@ -85,8 +109,8 @@ fn is_dark_mode() -> bool {
             .map(|theme| theme.to_lowercase().contains("dark"))
             .unwrap_or(false)
             || std::env::var("GTK_THEME")
-            .map(|theme| theme.to_lowercase().contains("dark"))
-            .unwrap_or(false)
+                .map(|theme| theme.to_lowercase().contains("dark"))
+                .unwrap_or(false)
     }
 
     // Fallback for unsupported platforms
@@ -106,32 +130,96 @@ impl DisplayState {
 
         // Define style tables for light and dark modes
         let light_styles = vec![
-            StyleTableEntry { color: Color::from_rgb(0, 0, 0), font: Font::Courier, size: 12 },      // 'A' = Black
-            StyleTableEntry { color: Color::from_rgb(200, 0, 0), font: Font::Courier, size: 12 },    // 'B' = Dark Red
-            StyleTableEntry { color: Color::from_rgb(0, 200, 0), font: Font::Courier, size: 12 },    // 'C' = Dark Green
-            StyleTableEntry { color: Color::from_rgb(0, 0, 200), font: Font::Courier, size: 12 },    // 'D' = Dark Blue
-            StyleTableEntry { color: Color::from_rgb(200, 0, 200), font: Font::Courier, size: 12 },  // 'E' = Dark Magenta
-            StyleTableEntry { color: Color::from_rgb(0, 200, 200), font: Font::Courier, size: 12 },  // 'F' = Dark Cyan
-            StyleTableEntry { color: Color::from_rgb(90, 90, 90), font: Font::Courier, size: 12 },   // 'G' = Dark Gray
+            StyleTableEntry {
+                color: Color::from_rgb(0, 0, 0),
+                font: Font::Courier,
+                size: 12,
+            }, // 'A' = Black
+            StyleTableEntry {
+                color: Color::from_rgb(200, 0, 0),
+                font: Font::Courier,
+                size: 12,
+            }, // 'B' = Dark Red
+            StyleTableEntry {
+                color: Color::from_rgb(0, 200, 0),
+                font: Font::Courier,
+                size: 12,
+            }, // 'C' = Dark Green
+            StyleTableEntry {
+                color: Color::from_rgb(0, 0, 200),
+                font: Font::Courier,
+                size: 12,
+            }, // 'D' = Dark Blue
+            StyleTableEntry {
+                color: Color::from_rgb(200, 0, 200),
+                font: Font::Courier,
+                size: 12,
+            }, // 'E' = Dark Magenta
+            StyleTableEntry {
+                color: Color::from_rgb(0, 200, 200),
+                font: Font::Courier,
+                size: 12,
+            }, // 'F' = Dark Cyan
+            StyleTableEntry {
+                color: Color::from_rgb(90, 90, 90),
+                font: Font::Courier,
+                size: 12,
+            }, // 'G' = Dark Gray
         ];
 
         let dark_styles = vec![
-            StyleTableEntry { color: Color::from_rgb(255, 255, 255), font: Font::Courier, size: 12 }, // 'A' = White
-            StyleTableEntry { color: Color::from_rgb(255, 100, 100), font: Font::Courier, size: 12 }, // 'B' = Light Red
-            StyleTableEntry { color: Color::from_rgb(100, 255, 100), font: Font::Courier, size: 12 }, // 'C' = Light Green
-            StyleTableEntry { color: Color::from_rgb(100, 100, 255), font: Font::Courier, size: 12 }, // 'D' = Light Blue
-            StyleTableEntry { color: Color::from_rgb(255, 100, 255), font: Font::Courier, size: 12 }, // 'E' = Light Magenta
-            StyleTableEntry { color: Color::from_rgb(100, 255, 255), font: Font::Courier, size: 12 }, // 'F' = Light Cyan
-            StyleTableEntry { color: Color::from_rgb(127, 127, 127), font: Font::Courier, size: 12 }, // 'G' = Light Gray 
+            StyleTableEntry {
+                color: Color::from_rgb(255, 255, 255),
+                font: Font::Courier,
+                size: 12,
+            }, // 'A' = White
+            StyleTableEntry {
+                color: Color::from_rgb(255, 100, 100),
+                font: Font::Courier,
+                size: 12,
+            }, // 'B' = Light Red
+            StyleTableEntry {
+                color: Color::from_rgb(100, 255, 100),
+                font: Font::Courier,
+                size: 12,
+            }, // 'C' = Light Green
+            StyleTableEntry {
+                color: Color::from_rgb(100, 100, 255),
+                font: Font::Courier,
+                size: 12,
+            }, // 'D' = Light Blue
+            StyleTableEntry {
+                color: Color::from_rgb(255, 100, 255),
+                font: Font::Courier,
+                size: 12,
+            }, // 'E' = Light Magenta
+            StyleTableEntry {
+                color: Color::from_rgb(100, 255, 255),
+                font: Font::Courier,
+                size: 12,
+            }, // 'F' = Light Cyan
+            StyleTableEntry {
+                color: Color::from_rgb(127, 127, 127),
+                font: Font::Courier,
+                size: 12,
+            }, // 'G' = Light Gray
         ];
 
         // Choose styles based on dark mode
-        let styles = if is_dark_mode() { dark_styles } else { light_styles };
+        let styles = if is_dark_mode() {
+            dark_styles
+        } else {
+            light_styles
+        };
 
         // Apply styles
         disp.set_highlight_data(style_buf.clone(), styles);
 
-        DisplayState { disp, text_buf, style_buf }
+        DisplayState {
+            disp,
+            text_buf,
+            style_buf,
+        }
     }
 
     fn append_text(&mut self, text: &str) {
@@ -170,11 +258,10 @@ impl DisplayState {
                         "35" => new_style = 'E', // Magenta
                         "36" => new_style = 'F', // Cyan
                         "90" => new_style = 'G', // Gray
-                        _ => {} // Ignore unsupported codes
+                        _ => {}                  // Ignore unsupported codes
                     }
                 }
                 current_style = new_style; // Apply last parsed style
-
             } else {
                 // ASCII Highlighting
                 let ascii_style = if ch.is_ascii_control() {
@@ -204,7 +291,6 @@ impl DisplayState {
         app::awake();
         app::redraw();
     }
-
 }
 
 fn update_status(text_display: &mut DisplayState, status: &str) {
@@ -213,14 +299,15 @@ fn update_status(text_display: &mut DisplayState, status: &str) {
 }
 
 fn choose_file(soc: &str) -> Option<String> {
-    let mut dialog = fltk::dialog::NativeFileChooser::new(fltk::dialog::NativeFileChooserType::BrowseFile);
+    let mut dialog =
+        fltk::dialog::NativeFileChooser::new(fltk::dialog::NativeFileChooserType::BrowseFile);
     dialog.set_option(fltk::dialog::NativeFileChooserOptions::UseFilterExt);
     dialog.set_filter(format!("*{}_rubyfpv_*.tgz", soc).as_str());
     match dialog.try_show() {
         Err(e) => {
             error!("error: {:?}", e);
             None
-        },
+        }
         Ok(res) => match res {
             fltk::dialog::NativeFileChooserAction::Success => {
                 let res = dialog.filename();
@@ -230,7 +317,7 @@ fn choose_file(soc: &str) -> Option<String> {
                 }
             }
             fltk::dialog::NativeFileChooserAction::Cancelled => None,
-        }
+        },
     }
 }
 
@@ -247,6 +334,7 @@ enum Message {
     IpChanged,
     DetectSoc,
     Flash,
+    ResetDevice,
 }
 
 #[derive(Default)]
@@ -264,13 +352,12 @@ struct RubyFlasher {
     port_input: Input,
     btn_detect: Button,
     btn_flash: Button,
+    btn_reset: Button,
     state: Arc<Mutex<State>>,
 }
 
 impl RubyFlasher {
-
     pub fn new() -> Self {
-
         let app = app::App::default().with_scheme(app::Scheme::Gtk);
 
         // Apply theme based on system dark mode
@@ -286,7 +373,7 @@ impl RubyFlasher {
 
         let (x, y) = center();
         let (w, h) = (600, 400);
-        let mut wind = Window::new(x - w/2, y - h/2, w, h, "RubyFPV simple flasher");
+        let mut wind = Window::new(x - w / 2, y - h / 2, w, h, "RubyFPV simple flasher");
         wind.set_xclass(wind.label().as_str());
         wind.make_resizable(true);
         let bytes = Asset::get("ruby.ico").unwrap();
@@ -295,30 +382,33 @@ impl RubyFlasher {
 
         let mut container = Flex::default().size_of_parent().column();
         container.set_margin(12);
-    
+
         let mut flex = Flex::default().size_of_parent().row();
         container.fixed(&flex, 29);
         let frame = Frame::default()
-                .with_label("IP address:")
-                .with_align(enums::Align::Inside);
+            .with_label("IP address:")
+            .with_align(enums::Align::Inside);
         flex.fixed(&frame, 70);
         let mut ip_input = Input::default();
         ip_input.emit(s, Message::IpChanged);
         let frame = Frame::default()
-                .with_label("port:")
-                .with_align(enums::Align::Inside);
+            .with_label("port:")
+            .with_align(enums::Align::Inside);
         flex.fixed(&frame, 30);
         let mut port_input = Input::default().with_type(InputType::Int);
         port_input.set_value("22");
         port_input.emit(s, Message::PortChanged);
 
         flex.fixed(&port_input, 70);
-    
+
         let mut btn_detect = Button::default().with_label("Identify SOC");
-    
+
         let mut btn_flash = Button::default().with_label("Flash firmware...");
         btn_flash.deactivate();
-    
+
+        let mut btn_reset = Button::default().with_label("Reset device");
+        btn_reset.deactivate();
+
         flex.end();
         let flex2 = Flex::default().size_of_parent().row();
         let display = Arc::new(Mutex::new(DisplayState::new()));
@@ -326,11 +416,15 @@ impl RubyFlasher {
         container.end();
         wind.end();
         wind.show();
-    
+
         btn_detect.emit(s, Message::DetectSoc);
         btn_flash.emit(s, Message::Flash);
-    
-        let state = Arc::new(Mutex::new(State { port: "22".to_string(), ..Default::default() }));
+        btn_reset.emit(s, Message::ResetDevice);
+
+        let state = Arc::new(Mutex::new(State {
+            port: "22".to_string(),
+            ..Default::default()
+        }));
         Self {
             app,
             receiver,
@@ -340,6 +434,7 @@ impl RubyFlasher {
             state,
             btn_detect,
             btn_flash,
+            btn_reset,
         }
     }
 
@@ -350,11 +445,11 @@ impl RubyFlasher {
                     Message::IpChanged => {
                         let mut state = self.state.lock().unwrap();
                         state.ip = self.ip_input.value();
-                    },
+                    }
                     Message::PortChanged => {
                         let mut state = self.state.lock().unwrap();
                         state.port = self.port_input.value();
-                    },
+                    }
                     Message::DetectSoc => {
                         let state = self.state.lock().unwrap();
                         let mut display = self.display.lock().unwrap();
@@ -371,26 +466,34 @@ impl RubyFlasher {
                         let display_clone = self.display.clone();
                         let mut btn_detect_clone = self.btn_detect.clone();
                         let mut btn_flash_clone = self.btn_flash.clone();
+                        let mut btn_reset_clone = self.btn_reset.clone();
                         tokio::spawn(async move {
                             let ip = state_clone.lock().unwrap().ip.clone();
                             match flasher::detect_soc(ip.as_str(), port, |msg| {
                                 update_status(&mut display_clone.lock().unwrap(), msg);
-                            }).await {
+                            })
+                            .await
+                            {
                                 Ok(soc) => {
                                     state_clone.lock().unwrap().soc = soc;
                                     update_status(&mut display_clone.lock().unwrap(), "Done.");
                                     btn_detect_clone.activate();
                                     btn_flash_clone.activate();
-                                },
+                                    btn_reset_clone.activate();
+                                }
                                 Err(e) => {
                                     error!("error: {:?}", e);
-                                    update_status(&mut display_clone.lock().unwrap(), format!("Error: {}", e).as_str());
+                                    update_status(
+                                        &mut display_clone.lock().unwrap(),
+                                        format!("Error: {}", e).as_str(),
+                                    );
                                     btn_detect_clone.activate();
                                     btn_flash_clone.deactivate();
+                                    btn_reset_clone.deactivate();
                                 }
                             }
                         });
-                    },
+                    }
                     Message::Flash => {
                         let state = self.state.lock().unwrap();
                         let mut display = self.display.lock().unwrap();
@@ -408,30 +511,85 @@ impl RubyFlasher {
                         };
                         self.btn_detect.deactivate();
                         self.btn_flash.deactivate();
+                        self.btn_reset.deactivate();
 
                         let state_clone = self.state.clone();
                         let display_clone = self.display.clone();
                         let mut btn_detect_clone = self.btn_detect.clone();
                         let mut btn_flash_clone = self.btn_flash.clone();
+                        let mut btn_reset_clone = self.btn_reset.clone();
                         tokio::spawn(async move {
                             let ip = state_clone.lock().unwrap().ip.clone();
                             match flasher::flash(ip.as_str(), port, &path, |msg| {
                                 update_status(&mut display_clone.lock().unwrap(), msg);
-                            }).await {
+                            })
+                            .await
+                            {
                                 Ok(_) => {
                                     update_status(&mut display_clone.lock().unwrap(), "Done.");
                                     btn_detect_clone.activate();
                                     btn_flash_clone.activate();
-                                },
+                                    btn_reset_clone.activate();
+                                }
                                 Err(e) => {
                                     error!("error: {:?}", e);
-                                    update_status(&mut display_clone.lock().unwrap(), format!("Error: {}", e).as_str());
+                                    update_status(
+                                        &mut display_clone.lock().unwrap(),
+                                        format!("Error: {}", e).as_str(),
+                                    );
                                     btn_detect_clone.activate();
                                     btn_flash_clone.activate();
+                                    btn_reset_clone.activate();
                                 }
                             }
                         });
-                    },
+                    }
+                    Message::ResetDevice => {
+                        let state = self.state.lock().unwrap();
+                        let mut display = self.display.lock().unwrap();
+                        let port: u16 = match state.port.parse() {
+                            Ok(v) => v,
+                            Err(e) => {
+                                error!("error: {:?}", e);
+                                update_status(&mut display, "Error: invalid port specified.");
+                                continue;
+                            }
+                        };
+                        self.btn_detect.deactivate();
+                        self.btn_flash.deactivate();
+                        self.btn_reset.deactivate();
+
+                        let state_clone = self.state.clone();
+                        let display_clone = self.display.clone();
+                        let mut btn_detect_clone = self.btn_detect.clone();
+                        let mut btn_flash_clone = self.btn_flash.clone();
+                        let mut btn_reset_clone = self.btn_reset.clone();
+                        tokio::spawn(async move {
+                            let ip = state_clone.lock().unwrap().ip.clone();
+                            match flasher::reset_device(ip.as_str(), port, |msg| {
+                                update_status(&mut display_clone.lock().unwrap(), msg);
+                            })
+                            .await
+                            {
+                                Ok(_) => {
+                                    update_status(&mut display_clone.lock().unwrap(), "Done.");
+                                    btn_detect_clone.activate();
+                                    btn_flash_clone.activate();
+                                    btn_reset_clone.activate();
+                                }
+                                Err(e) => {
+                                    error!("error: {:?}", e);
+                                    update_status(
+                                        &mut display_clone.lock().unwrap(),
+                                        format!("Error: {}", e).as_str(),
+                                    );
+                                    btn_detect_clone.activate();
+                                    btn_flash_clone.activate();
+                                    btn_reset_clone.activate();
+                                }
+                            }
+                        });
+                    }
                 }
             }
         }
@@ -447,9 +605,7 @@ async fn main() {
             AttachConsole(ATTACH_PARENT_PROCESS);
         }
     }
-    env_logger::builder()
-        .filter_level(LevelFilter::Info)
-        .init();
+    env_logger::builder().filter_level(LevelFilter::Info).init();
 
     let a = RubyFlasher::new();
     a.run();
