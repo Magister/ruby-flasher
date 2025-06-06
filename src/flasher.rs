@@ -12,6 +12,7 @@ use std::path::Path;
 use std::time::Duration;
 use std::{net::IpAddr, str::FromStr, sync::Arc};
 use std::str;
+use thiserror::Error;
 
 struct Client;
 
@@ -19,16 +20,26 @@ const TIMEOUT_TINY: u64 = 5;
 const TIMEOUT_MAIN: u64 = 60;
 
 // Custom error type for authentication failures
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Error)]
 #[error("Authentication failed: {message}")]
 pub struct AuthError {
     message: String,
+    #[source]
+    source: Option<Box<dyn StdError + Send + Sync + 'static>>,
 }
 
 impl AuthError {
     fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
+            source: None,
+        }
+    }
+
+    fn with_source(message: impl Into<String>, source: Box<dyn StdError + Send + Sync>) -> Self {
+        Self {
+            message: message.into(),
+            source: Some(source),
         }
     }
 
@@ -36,8 +47,8 @@ impl AuthError {
         Self::new("invalid credentials")
     }
 
-    fn ssh_error(source: impl std::fmt::Display) -> Self {
-        Self::new(format!("SSH authentication error: {}", source))
+    fn ssh_error(source: Box<dyn StdError + Send + Sync>) -> Self {
+        Self::with_source("SSH authentication error", source)
     }
 }
 
@@ -61,7 +72,7 @@ fn convert_potential_auth_error(error: Error) -> Error {
        error_str.contains("userauth") ||
        error_str.contains("no such user") ||
        error_str.contains("user unknown") {
-        return AuthError::ssh_error(error).into();
+        return AuthError::ssh_error(error.into()).into();
     }
 
     // Check the error chain for authentication-related errors
@@ -74,7 +85,7 @@ fn convert_potential_auth_error(error: Error) -> Error {
            err_str.contains("password") ||
            err_str.contains("permission denied") ||
            err_str.contains("access denied") {
-            return AuthError::ssh_error(error).into();
+            return AuthError::ssh_error(error.into()).into();
         }
 
         source = err.source();
@@ -253,7 +264,7 @@ async fn transfer_file<F>(src: &str, dst: &str, session: &mut Handle<Client>, mu
 async fn run_command<F>(session: &mut Handle<Client>, command: &str, mut status_update: F) -> Result<String> where F: FnMut(&str) {
     info!("# {}", command);
     //tokio::time::sleep(Duration::from_secs(2)).await;
-    status_update(format!("# {}", command).as_str());
+    status_update(&format!("# {}", command));
     let mut result: Option<u32> = None;
     let mut res = String::new();
     let mut buf: Vec<u8> = Vec::new();
@@ -305,7 +316,7 @@ async fn run_command<F>(session: &mut Handle<Client>, command: &str, mut status_
                     let str_msg = String::from_utf8_lossy(data);
                     for line in str_msg.split("\n") {
                         error!("stderr: {}", line);
-                        status_update(format!("stderr: {}", line).as_str());
+                        status_update(&format!("stderr: {}", line));
                     }
                 }
             }
@@ -353,7 +364,7 @@ async fn run_command<F>(session: &mut Handle<Client>, command: &str, mut status_
     info!("closing channel");
     tokio::time::timeout(Duration::from_secs(TIMEOUT_TINY), channel.close()).await??;
 
-    status_update(format!("command '{}' done.", command).as_str());
+    status_update(&format!("command '{}' done.", command));
 
     // tokio::time::sleep(Duration::from_secs(1)).await;
 
@@ -409,11 +420,11 @@ pub(crate) async fn flash<F>(ip_addr: &str, port: u16, src: &str, mut status_upd
     let ip = IpAddr::from_str(&ip_addr).context("Invalid IP address")?;
     let fname = extract_filename(&src)?;
     let dst = format!("/tmp/{}", fname);
-    status_update(format!("Connecting to {}:{}...", ip_addr, port).as_str());
+    status_update(&format!("Connecting to {}:{}...", ip_addr, port));
     let mut session = smart_connect(ip, port, password).await?; // This can return auth errors
     let soc = run_command(&mut session, "fw_printenv -n soc", &mut status_update).await?;
     run_command(&mut session, "ruby_stop.sh || true", &mut status_update).await?;
-    status_update(format!("Uploading firmware {}...", fname).as_str());
+    status_update(&format!("Uploading firmware {}...", fname));
     transfer_file(&src, &dst, &mut session, &mut status_update).await?;
     run_command(&mut session, format!("sh -c 'gunzip -c {} | tar -xvC /tmp'", dst).as_str(), &mut status_update).await?;
     run_command(&mut session, format!("sysupgrade --kernel=/tmp/uImage.{} --rootfs=/tmp/rootfs.squashfs.{} -z", soc.trim(), soc.trim()).as_str(), &mut status_update).await?;
@@ -423,7 +434,7 @@ pub(crate) async fn flash<F>(ip_addr: &str, port: u16, src: &str, mut status_upd
 
 pub(crate) async fn reset_device<F>(ip_addr: &str, port: u16, mut status_update: F, password: Option<&str>) -> Result<(), Error> where F: FnMut(&str) {
     let ip = IpAddr::from_str(&ip_addr).context("Invalid IP address")?;
-    status_update(format!("Connecting to {}:{}...", ip_addr, port).as_str());
+    status_update(&format!("Connecting to {}:{}...", ip_addr, port));
     let mut session = smart_connect(ip, port, password).await?; // This can return auth errors
     status_update("Executing firstboot command...");
     run_command(&mut session, "firstboot", &mut status_update).await?;
@@ -433,9 +444,9 @@ pub(crate) async fn reset_device<F>(ip_addr: &str, port: u16, mut status_update:
 
 pub(crate) async fn execute_command<F>(ip_addr: &str, port: u16, command: &str, mut status_update: F, password: Option<&str>) -> Result<(), Error> where F: FnMut(&str) {
     let ip = IpAddr::from_str(&ip_addr).context("Invalid IP address")?;
-    status_update(format!("Connecting to {}:{}...", ip_addr, port).as_str());
+    status_update(&format!("Connecting to {}:{}...", ip_addr, port));
     let mut session = smart_connect(ip, port, password).await?; // This can return auth errors
-    status_update(format!("Executing command: {}", command).as_str());
+    status_update(&format!("Executing command: {}", command));
     run_command(&mut session, command, &mut status_update).await?;
     session.disconnect(Disconnect::ByApplication, "", "en").await?;
     Ok(())

@@ -323,7 +323,7 @@ fn choose_file(soc: &str) -> Option<String> {
 }
 
 fn prompt_for_password() -> Option<String> {
-    match fltk::dialog::input_default("Authentication failed with default password.\nPlease enter the device password:", "") {
+    match fltk::dialog::input_default("Authentication failed.\nPlease enter the device password:", "") {
         Some(password) => Some(password.to_string()),
         _ => None,
     }
@@ -361,7 +361,6 @@ struct State {
     soc: String,
     ip: String,
     port: String,
-    manual_mode: bool,
     password: Option<String>,
 }
 
@@ -758,7 +757,6 @@ impl RubyFlasher {
                         let state = self.state.lock().unwrap();
                         if !state.ip.is_empty() {
                             drop(state); // Release the lock before acquiring it again
-                            self.state.lock().unwrap().manual_mode = true;
                             self.btn_detect.deactivate();
                             self.btn_flash.deactivate();
                             self.menu_btn.deactivate();
@@ -777,7 +775,6 @@ impl RubyFlasher {
                         }
                     }
                     Message::ExitManualMode => {
-                        self.state.lock().unwrap().manual_mode = false;
                         // Hide the manual flex
                         self.manual_flex.hide();
                         self.container.layout();
@@ -788,11 +785,11 @@ impl RubyFlasher {
                         app::redraw();
                     }
                     Message::ExecuteManualCommand => {
-                        let state = self.state.lock().unwrap();
-                        if !state.manual_mode {
-                            return; // Ignore if not in manual mode
+                        // Only allow command execution if manual_flex is visible (manual mode)
+                        if !self.manual_flex.visible() {
+                            return;
                         }
-
+                        let state = self.state.lock().unwrap();
                         let command = self.manual_input.value().trim().to_string();
                         if command.is_empty() {
                             return;
